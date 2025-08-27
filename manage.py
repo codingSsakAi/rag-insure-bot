@@ -1,22 +1,35 @@
 #!/usr/bin/env python
-# root/manage.py
+# C:\Users\Admin\Desktop\insurance_project\manage.py
 import os
 import sys
 from pathlib import Path
 
 def main():
-    BASE_DIR = Path(__file__).resolve().parent  # root/
+    # 현재 실행 루트
+    BASE_DIR = Path(__file__).resolve().parent
 
-    # 1) 메인 프로젝트(root)가 sys.path의 최상단에 오도록 보정
+    # 1) 우리 루트를 sys.path 맨 앞에
     if str(BASE_DIR) in sys.path:
-        # 이미 있으면 맨 앞으로 재배치
         sys.path.remove(str(BASE_DIR))
     sys.path.insert(0, str(BASE_DIR))
 
-    # 2) 팀원 코드(0826-5)는 맨 **뒤**에 붙여 portal만 추가로 찾도록
+    # 2) 동일 이름 패키지를 가진 "다른 루트" 들은 목록의 뒤로 밀기
+    #    (예: C:\ai_x\2ndProject\jang\insurance_project 같은 과거 경로)
+    for p in list(sys.path):
+        try:
+            pp = Path(p)
+            if pp == BASE_DIR:
+                continue
+            if (pp / "insurance_app").exists() and (pp / "insurance_project").exists():
+                sys.path.remove(p)
+                sys.path.append(p)  # ← 뒤로
+        except Exception:
+            pass
+
+    # 3) 팀원 모듈(0826-5)이 현재 루트 아래 있으면 '뒤'에만 붙임
     extra = BASE_DIR / "0826-5"
     if extra.exists() and str(extra) not in sys.path:
-        sys.path.append(str(extra))  # ← append가 포인트 (insert(0, ...) 금지)
+        sys.path.append(str(extra))  # 맨 앞 금지
 
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "insurance_project.settings")
 
@@ -24,7 +37,6 @@ def main():
         from django.core.management import execute_from_command_line
     except ImportError as exc:
         raise ImportError("Django import 실패: 가상환경/설치 확인") from exc
-
     execute_from_command_line(sys.argv)
 
 if __name__ == "__main__":

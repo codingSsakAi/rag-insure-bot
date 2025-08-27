@@ -32,10 +32,6 @@
     .kv{display:flex; gap:18px; flex-wrap:wrap; color:#5f6f85; font-size:13px}
     .kv b{color:#26374a}
 
-    .grid{display:grid; gap:10px; grid-template-columns:repeat(3, minmax(0,1fr)); margin-top:10px}
-    @media (max-width: 980px){ .grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
-    @media (max-width: 640px){ .grid{grid-template-columns:1fr;}}
-
     .toolbar{display:flex; justify-content:space-between; align-items:center; margin:18px 2px}
     .muted{color:var(--muted); font-size:13px}
 
@@ -68,14 +64,6 @@
     .pagebtn{padding:8px 12px; border-radius:10px; background:#eef2f7; color:#243043; text-decoration:none; border:1px solid #e5e9f2}
     .pagebtn.active{background:var(--primary); color:#fff; border-color:transparent}
     .pagebtn.disabled{opacity:.5; pointer-events:none}
-
-    .modal{position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.4); z-index:1000}
-    .modal.open{display:flex}
-    .modal-card{width:min(1000px, 92vw); height:min(82vh, 900px); background:#fff; border-radius:14px; overflow:hidden; box-shadow:var(--shadow); display:flex; flex-direction:column}
-    .modal-head{display:flex; justify-content:space-between; align-items:center; padding:10px 14px; border-bottom:1px solid var(--line)}
-    .modal-title{font-weight:800}
-    .modal-body{flex:1; background:#f8fafc}
-    .modal-body iframe{width:100%; height:100%; border:0}
   </style>
 </head>
 <body>
@@ -92,11 +80,10 @@
 
     <!-- 상단 -->
     <div class="topbar">
-      <!-- ✅ 네임스페이스 의존 제거: 그냥 루트로 -->
-      <a class="backlink" href="/" target="_top" rel="noopener">← 홈으로 돌아가기</a>
+      <a class="backlink" href="{% url 'insurance_app:home' %}">← 홈으로</a>
     </div>
 
-    <!-- 프로필 -->
+    <!-- 요약/프로필 -->
     <section class="profile">
       <div class="avatar"></div>
       <div>
@@ -108,34 +95,6 @@
           {% if request.user.email %}<span>메일: <b>{{ request.user.email }}</b></span>{% endif %}
           <span>가입일: <b>{{ request.user.date_joined|date:"Y-m-d" }}</b></span>
           {% if request.user.last_login %}<span>최근 로그인: <b>{{ request.user.last_login|date:"Y-m-d H:i" }}</b></span>{% endif %}
-          <span>활성화: <b>{% if request.user.is_active %}예{% else %}아니오{% endif %}</b></span>
-          <span>스태프: <b>{% if request.user.is_staff %}예{% else %}아니오{% endif %}</b></span>
-          <span>관리자: <b>{% if request.user.is_superuser %}예{% else %}아니오{% endif %}</b></span>
-        </div>
-
-        <div class="grid">
-          {% if request.user.birth_date %}<div>생년월일: <b>{{ request.user.birth_date|date:"Y-m-d" }}</b></div>{% endif %}
-          {% if request.user.gender %}<div>성별: <b>{{ request.user.gender }}</b></div>{% endif %}
-          {% if request.user.has_license %}<div>운전면허 소지: <b>{% if request.user.has_license %}예{% else %}아니오{% endif %}</b></div>{% endif %}
-
-          {% if request.user.vehicle_make %}<div>차량 제조사: <b>{{ request.user.vehicle_make }}</b></div>{% endif %}
-          {% if request.user.vehicle_model %}<div>차량 모델: <b>{{ request.user.vehicle_model }}</b></div>{% endif %}
-          {% if request.user.vehicle_year %}<div>차량 연식: <b>{{ request.user.vehicle_year }}</b></div>{% endif %}
-          {% if request.user.vehicle_color %}<div>차량 색상: <b>{{ request.user.vehicle_color }}</b></div>{% endif %}
-          {% if request.user.vehicle_plate %}<div>차량 번호: <b>{{ request.user.vehicle_plate }}</b></div>{% endif %}
-
-          {% if request.user.insurer_name %}<div>보험사: <b>{{ request.user.insurer_name }}</b></div>{% endif %}
-          {% if request.user.policy_number %}<div>증권번호: <b>{{ request.user.policy_number }}</b></div>{% endif %}
-          {% if request.user.policy_expiry %}<div>만기일: <b>{{ request.user.policy_expiry|date:"Y-m-d" }}</b></div>{% endif %}
-          {% if request.user.driver_license_no %}<div>운전면허번호: <b>{{ request.user.driver_license_no }}</b></div>{% endif %}
-        </div>
-
-        <div class="kv" style="margin-top:10px">
-          {% if agreements.paginator %}
-            <span>내 협의서 수: <b>{{ agreements.paginator.count }}</b></span>
-          {% else %}
-            <span>내 협의서 수: <b>{{ agreements|length }}</b></span>
-          {% endif %}
         </div>
       </div>
       <div></div>
@@ -178,15 +137,19 @@
               <div class="muted" style="margin-bottom:2px">요약: {{ ag.summary }}</div>
             {% endif %}
 
+            <!-- 액션 -->
             <div class="actions">
               <a class="btn btn-ghost" href="{% url 'accident_project:agreement_edit' ag.pk %}">수정</a>
+
+              <button type="button" class="btn btn-ghost btn-preview"
+                      data-url="{% url 'accident_project:agreement_preview_saved' ag.pk %}?in_preview=1">
+                미리보기
+              </button>
 
               <button type="button" class="btn btn-danger btn-delete" data-id="{{ ag.pk }}">삭제</button>
               <form class="delete-form" action="{% url 'accident_project:agreement_delete' ag.pk %}" method="post" style="display:none">
                 {% csrf_token %}
               </form>
-
-              <button type="button" class="btn btn-ghost btn-preview" data-url="{% url 'accident_project:agreement_preview_saved' ag.pk %}">미리보기</button>
             </div>
           </div>
         </article>
@@ -196,8 +159,9 @@
       {% if agreements.has_other_pages %}
       <nav class="pager" aria-label="pagination">
         <a class="pagebtn{% if not agreements.has_previous %} disabled{% endif %}"
-           href="{% if agreements.has_previous %}?page={{ agreements.previous_page_number }}{% else %}#{% endif %}"
-           aria-disabled="{% if agreements.has_previous %}false{% else %}true{% endif %}">이전</a>
+           href="{% if agreements.has_previous %}?page={{ agreements.previous_page_number }}{% else %}#{% endif %}">
+           이전
+        </a>
 
         {% for n in agreements.paginator.page_range %}
           {% if n == agreements.number %}
@@ -208,8 +172,9 @@
         {% endfor %}
 
         <a class="pagebtn{% if not agreements.has_next %} disabled{% endif %}"
-           href="{% if agreements.has_next %}?page={{ agreements.next_page_number }}{% else %}#{% endif %}"
-           aria-disabled="{% if agreements.has_next %}false{% else %}true{% endif %}">다음</a>
+           href="{% if agreements.has_next %}?page={{ agreements.next_page_number }}{% else %}#{% endif %}">
+           다음
+        </a>
       </nav>
       {% endif %}
     {% else %}
@@ -219,106 +184,35 @@
     {% endif %}
   </div>
 
-  <!-- 미리보기 모달 -->
-  <div class="modal" id="preview-modal" role="dialog" aria-modal="true" aria-hidden="true">
-    <div class="modal-card">
-      <div class="modal-head">
-        <div class="modal-title">미리보기</div>
-        <button type="button" class="btn btn-ghost" id="preview-close">닫기</button>
-      </div>
-      <div class="modal-body">
-        <iframe id="preview-frame" src="about:blank"></iframe>
-      </div>
-    </div>
-  </div>
-
-  <!-- 삭제 확인 모달 -->
-  <div class="modal" id="delete-modal" role="dialog" aria-modal="true" aria-hidden="true">
-    <div class="modal-card" style="width:min(520px,92vw); height:auto">
-      <div class="modal-head">
-        <div class="modal-title">삭제 확인</div>
-        <button type="button" class="btn btn-ghost" id="delete-cancel-top">닫기</button>
-      </div>
-      <div style="padding:18px">
-        <p id="delete-text" style="margin:0 0 14px; line-height:1.6"></p>
-        <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:10px">
-          <button type="button" class="btn btn-ghost" id="delete-cancel">아니오</button>
-          <button type="button" class="btn btn-danger" id="delete-confirm">예, 삭제합니다</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <script>
-    (function(){
-      // 미리보기
-      const previewModal = document.getElementById('preview-modal');
-      const previewFrame = document.getElementById('preview-frame');
-      const closePreview = document.getElementById('preview-close');
+  (function(){
+    // 작은 팝업(센터 배치)
+    function openPreview(url){
+      const sw = window.screen.width, sh = window.screen.height;
+      const w = Math.min(980, sw - 80);
+      const h = Math.min(720, sh - 120);
+      const left = Math.max(0, Math.floor((sw - w) / 2));
+      const top  = Math.max(0, Math.floor((sh - h) / 2));
+      const feat = `popup=yes,resizable=yes,scrollbars=yes,width=${w},height=${h},left=${left},top=${top}`;
+      window.open(url, 'agreementPreview', feat);
+    }
 
-      document.querySelectorAll('.btn-preview').forEach(btn=>{
-        btn.addEventListener('click', ()=>{
-          const url = btn.getAttribute('data-url');
-          previewFrame.src = url;
-          previewModal.classList.add('open');
-          previewModal.setAttribute('aria-hidden','false');
-        });
-      });
-      closePreview.addEventListener('click', ()=>{
-        previewFrame.src = 'about:blank';
-        previewModal.classList.remove('open');
-        previewModal.setAttribute('aria-hidden','true');
-      });
-      previewModal.addEventListener('click', (e)=>{
-        if(e.target === previewModal){
-          closePreview.click();
+    document.querySelectorAll('.btn-preview').forEach(btn=>{
+      btn.addEventListener('click', ()=> openPreview(btn.dataset.url));
+    });
+
+    // 삭제 확인
+    let pendingDeleteForm = null;
+    document.querySelectorAll('.btn-delete').forEach(btn=>{
+      btn.addEventListener('click', (ev)=>{
+        const card = ev.target.closest('.card');
+        const dateText = card?.getAttribute('data-accident-date') || '날짜미상';
+        if (confirm(`${dateText} 의 사고 기록을 삭제하시겠습니까?\n삭제 시 복구는 불가합니다.`)) {
+          card.querySelector('.delete-form').submit();
         }
       });
-
-      // 삭제
-      let pendingDeleteForm = null;
-      const deleteModal = document.getElementById('delete-modal');
-      const deleteText  = document.getElementById('delete-text');
-      const delCancel1  = document.getElementById('delete-cancel-top');
-      const delCancel2  = document.getElementById('delete-cancel');
-      const delConfirm  = document.getElementById('delete-confirm');
-
-      function closeDeleteModal(){
-        pendingDeleteForm = null;
-        deleteModal.classList.remove('open');
-        deleteModal.setAttribute('aria-hidden','true');
-      }
-
-      document.querySelectorAll('.btn-delete').forEach(btn=>{
-        btn.addEventListener('click', (ev)=>{
-          const card = ev.target.closest('.card');
-          const dateText = card?.getAttribute('data-accident-date') || '날짜미상';
-          deleteText.innerHTML =
-            dateText + ' 의 사고 기록을 삭제하시겠습니까?<br>' +
-            '삭제한다면 복구는 불가합니다.<br>' +
-            '동의하신다면 예를 눌러주세요';
-          pendingDeleteForm = card.querySelector('.delete-form');
-          deleteModal.classList.add('open');
-          deleteModal.setAttribute('aria-hidden','false');
-        });
-      });
-
-      delCancel1.addEventListener('click', closeDeleteModal);
-      delCancel2.addEventListener('click', closeDeleteModal);
-      deleteModal.addEventListener('click', (e)=>{ if(e.target===deleteModal) closeDeleteModal(); });
-
-      delConfirm.addEventListener('click', ()=>{
-        if(pendingDeleteForm){ pendingDeleteForm.submit(); }
-      });
-
-      // ESC로 모달 닫기
-      document.addEventListener('keydown', (e)=>{
-        if(e.key === 'Escape'){
-          if(previewModal.classList.contains('open')) closePreview.click();
-          if(deleteModal.classList.contains('open')) closeDeleteModal();
-        }
-      });
-    })();
+    });
+  })();
   </script>
 </body>
 </html>

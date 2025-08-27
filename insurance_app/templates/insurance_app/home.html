@@ -1,100 +1,57 @@
+<!-- insurance_app/templates/home.html -->
+{% load static %}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>보험 추천 시스템</title>
   <style>
-    body{font-family:system-ui,-apple-system,"Segoe UI","Noto Sans KR",Arial,sans-serif;
-         margin:0;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
-         min-height:100vh;display:flex;align-items:center;justify-content:center}
-    .container{background:#fff;padding:46px;border-radius:20px;max-width:760px;box-shadow:0 20px 40px rgba(0,0,0,.1);text-align:center}
-    h1{color:#2c3e50;font-size:2.4rem;margin:.2rem 0 1rem}
-    .btn{display:inline-block;padding:14px 26px;margin:8px;border-radius:40px;text-decoration:none;color:#fff;font-weight:800;
-         background:linear-gradient(135deg,#3498db,#2980b9);transition:.2s}
-    .btn:hover{transform:translateY(-2px);box-shadow:0 10px 25px rgba(52,152,219,.3)}
-    .btn.secondary{background:linear-gradient(135deg,#27ae60,#2ecc71)}
-    .btn.tertiary{background:linear-gradient(135deg,#8e44ad,#9b59b6)}
-    .btn.outline{background:#fff;color:#34495e;border:2px solid #34495e}
-    .btn.outline:hover{background:#34495e;color:#fff}
-    .group-title{margin-top:22px;color:#2c3e50;font-weight:900}
-
-    /* 포털 토글 버튼/패널 */
-    .portal-toggle{position:fixed;right:18px;bottom:18px;z-index:9999}
-    .portal-toggle button{border:0;border-radius:999px;padding:12px 18px;font-weight:800;background:#111;color:#fff;cursor:pointer}
-    .portal-panel{position:fixed;top:0;right:-420px;width:420px;height:100vh;background:#fff;border-left:1px solid #e6e9ef;box-shadow:-10px 0 24px rgba(0,0,0,.1);
-                  transition:right .25s ease;z-index:9998;display:flex;flex-direction:column}
-    .portal-panel.open{right:0}
-    .portal-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid #eef2f7}
-    .portal-head b{font-size:14px}
-    .portal-body{flex:1;min-height:0}
-    .portal-body iframe{width:100%;height:100%;border:0}
+    body{font-family:system-ui,-apple-system,"Segoe UI","Noto Sans KR",Arial,sans-serif;margin:0;padding:0;
+         background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;display:flex;align-items:center;justify-content:center}
+    .container{background:white;padding:50px;border-radius:20px;box-shadow:0 20px 40px rgba(0,0,0,0.1);text-align:center;max-width:680px}
+    h1{color:#2c3e50;margin-bottom:10px;font-size:2.2em}
+    p.sub{color:#4a5a70;margin:0 0 18px}
+    .btn{display:inline-block;padding:14px 24px;margin:8px;background:linear-gradient(135deg,#3498db,#2980b9);
+         color:white;text-decoration:none;border-radius:999px;transition:.2s;font-weight:800}
+    .btn:hover{transform:translateY(-2px);box-shadow:0 10px 25px rgba(52,152,219,.25)}
+    .btn.sec{background:linear-gradient(135deg,#27ae60,#2ecc71)}
+    .btn.ter{background:linear-gradient(135deg,#8e44ad,#9b59b6)}
+    .nav{margin-top:18px;display:flex;gap:10px;justify-content:center}
+    .nav a, .nav button{padding:8px 16px;border-radius:999px;border:1px solid #e5e9f2;background:#eef2f7;color:#243043;
+                        text-decoration:none;font-weight:700;cursor:pointer}
+    .logout{background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;border-color:transparent}
   </style>
 </head>
 <body>
   <div class="container">
     <h1>🏥 보험 추천 시스템</h1>
-    <p>AI 기반 맞춤형 보험 상품 추천 및 약관 검색 서비스</p>
-    <br/>
+    <p class="sub">AI 기반 맞춤형 보험 상품 추천 및 약관 검색 서비스</p>
 
-    <!-- 보험 기능 -->
-    <a class="btn" href="{% url 'insurance_app:insurance_recommendation' %}">🔍 AI 약관 검색</a>
-    <a class="btn secondary" href="{% url 'insurance_app:recommend_insurance' %}">📊 보험 추천</a>
-    <a class="btn tertiary" href="{% url 'insurance_app:glossary' %}">📘 약관 용어 사전</a>
+    <!-- 기능 버튼 -->
+    <div>
+      <a class="btn ter" href="{% url 'insurance_app:glossary' %}">📘 약관 용어 사전</a>
+      <a class="btn" href="{% url 'insurance_app:insurance_recommendation' %}">🔍 AI 약관 검색</a>
+      <a class="btn sec" href="{% url 'insurance_app:recommend_insurance' %}">📊 보험 추천</a>
+    </div>
 
-    <!-- 협의서 기능 (accident_project) -->
-    <h3 class="group-title">🚗 교통사고/협의서</h3>
-    <a class="btn outline" href="{% url 'accident_project:agreement_new' %}" target="_top">+ 새 협의서 작성</a>
-    <a class="btn outline" href="{% url 'accident_project:mypage_agreements' %}" target="_top">📂 내 협의서 관리</a>
+    <!-- 협의서 바로가기 -->
+    <div style="margin-top:8px">
+      <a class="btn sec" href="{% url 'accident_project:agreement_new' %}">✍️ 협의서 작성</a>
+      <a class="btn" href="{% url 'accident_project:mypage_agreements' %}">📂 내 협의서</a>
+    </div>
 
-    <br/><br/>
-
-    {% if user.is_authenticated %}
-      <p>안녕하세요, {{ user.username }}님!</p>
-      <form action="{% url 'insurance_app:logout' %}" method="post" style="display:inline">
-        {% csrf_token %}
-        <button class="btn outline" type="submit">로그아웃</button>
-      </form>
-    {% else %}
-      <a class="btn" href="{% url 'insurance_app:signup' %}">회원가입</a>
-      <a class="btn" href="{% url 'insurance_app:login' %}">로그인</a>
-    {% endif %}
+    <div class="nav">
+      {% if user.is_authenticated %}
+        <a href="{% url 'insurance_app:mypage' %}">👤 마이페이지</a>
+        <form action="{% url 'insurance_app:logout' %}" method="post" style="display:inline">
+          {% csrf_token %}<button class="logout" type="submit">로그아웃</button>
+        </form>
+      {% else %}
+        <a href="{% url 'insurance_app:signup' %}">회원가입</a>
+        <a href="{% url 'insurance_app:login' %}">로그인</a>
+      {% endif %}
+    </div>
   </div>
-
-  <!-- 포털 사이드 패널 (있을 때만 정상 표시됨) -->
-  <div class="portal-toggle"><button id="portal-open">☰ 포털</button></div>
-  <aside id="portal-panel" class="portal-panel" aria-hidden="true">
-    <div class="portal-head">
-      <b>Insurance Portal</b>
-      <button id="portal-close" style="border:0;background:#eef2f7;padding:6px 10px;border-radius:10px;cursor:pointer">닫기</button>
-    </div>
-    <div class="portal-body">
-      <!-- 동일 출처 프레임 허용되어야 함 (settings.X_FRAME_OPTIONS = SAMEORIGIN) -->
-      <iframe id="portal-frame" src="/portal/"></iframe>
-    </div>
-  </aside>
-
-  <script>
-    (function(){
-      const panel = document.getElementById('portal-panel');
-      const frame = document.getElementById('portal-frame');
-      document.getElementById('portal-open').addEventListener('click', ()=>{
-        // 포털 미설치/오류시 fallback: 새 탭
-        try {
-          panel.classList.add('open');
-          panel.setAttribute('aria-hidden','false');
-        } catch(e) {
-          window.open('/portal/', '_blank', 'noopener');
-        }
-      });
-      document.getElementById('portal-close').addEventListener('click', ()=>{
-        panel.classList.remove('open');
-        panel.setAttribute('aria-hidden','true');
-        // 에러났던 프레임을 초기화 (선택)
-        try{ frame.contentWindow.location.replace('about:blank'); }catch(e){}
-        frame.src = '/portal/';
-      });
-    })();
-  </script>
 </body>
 </html>

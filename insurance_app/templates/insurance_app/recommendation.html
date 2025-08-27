@@ -1,3 +1,4 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -99,7 +100,8 @@
   </div>
 
   <script>
-    const MEDIA_BASE = "{{ MEDIA_URL|default:'/documents/' }}";  // settings.MEDIA_URL 전달됨
+    // 템플릿에서 MEDIA_URL이 안 들어오는 환경도 대비
+    const MEDIA_BASE = "{{ MEDIA_URL|default:'/media/' }}";
 
     function getCookie(name){
       let v=null;
@@ -147,14 +149,32 @@
       sendChat();
     }
 
-    function clamp01(x){ return Math.max(0,Math.min(0.999,Number(x)||0)); }
-
-    // 경로 컴포넌트 안전 인코딩 (한글/공백 대응)
+    // 안전 인코딩
     function encodePath(p){
       return String(p||'').split('/').map(encodeURIComponent).join('/');
     }
 
-    // 간단 키워드 하이라이트
+    // ✅ JS만으로 robust 링크 결정
+    function resolveDocUrl(ref){
+      // 1) 백엔드가 doc_url 또는 pdf_link를 내려주면 그것을 최우선 사용
+      if (ref && ref.doc_url) return ref.doc_url;
+      if (ref && ref.pdf_link) return ref.pdf_link;
+
+      // 2) 회사명으로 추정 경로 구성 (한글/공백 인코딩)
+      const c = encodePath(ref?.company || ref?.insurer || '');
+      if (!c) return '';
+
+      // 3) 후보 경로(환경마다 달라도 JS만으로 시도 가능)
+      const candidates = [
+        `/documents/${c}/${c}.pdf`,   // 우리가 새로 권장하는 규칙
+        `${MEDIA_BASE}documents/${c}.pdf`, // media/documents/<회사>.pdf
+        `${MEDIA_BASE}${c}.pdf`,      // media/<회사>.pdf
+        `/static/documents/${c}.pdf`, // static/documents/<회사>.pdf
+      ];
+      return candidates[0]; // 기본값은 첫 후보 (필요하면 404시 대체도 가능)
+    }
+
+    // 간단 하이라이트
     function highlight(text, query){
       try{
         const terms = (query||'').split(/\s+/).filter(t=>t.length>=2);
@@ -194,14 +214,13 @@
 
         const answerHtml = highlight((data.answer||'').replace(/\n/g,'\n'), q);
 
-        /* ▼ 근거 표시: "회사 / p.N · 해당 페이지" + /documents/<회사>/<회사>.pdf#page=N */
-        const refs=(data.references||[]).map((s,i)=>{
-          const page = s.page || '';
-          const company = s.company || '?';
-          // 회사명 기반 문서 경로 조합
-          const docPath = `${encodePath(company)}/${encodePath(company)}.pdf`;
-          const link = page ? `<a href="/documents/${docPath}#page=${page}" target="_blank">원문 보기</a>` : '';
-          return `(${i+1}) ${company}${page?` / p.${page}`:''} ${link}`;
+        // ▼ 근거 표시: ref.doc_url / ref.pdf_link 우선, 없으면 회사명 기반 후보 경로 사용
+        const refs=(data.references||[]).map((ref,i)=>{
+          const page = ref.page || ref.page_number || '';
+          const href = resolveDocUrl(ref);
+          const link = href ? `<a href="${href}${page?`#page=${page}`:''}" target="_blank" rel="noopener">원문 보기</a>` : '';
+          const label = (ref.company || ref.insurer || '약관') + (page?` / p.${page}`:'');
+          return `(${i+1}) ${label} ${link}`;
         }).join('<br/>');
 
         const html = `
