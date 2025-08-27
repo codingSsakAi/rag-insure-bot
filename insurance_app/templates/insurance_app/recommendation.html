@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>보험 약관 RAG 챗봇</title>
+  <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><text y="1em" font-size="96">🤖</text></svg>'>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px}
+    .container{max-width:1000px;margin:0 auto;background:#fff;border-radius:20px;box-shadow:0 20px 40px rgba(0,0,0,.1);overflow:hidden}
+    .header{background:linear-gradient(135deg,#2c3e50,#3498db);color:#fff;padding:26px 30px;text-align:center}
+    .header h1{font-size:2.2em;margin-bottom:8px;font-weight:300}
+    .nav-bar{margin-top:12px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+    .nav-btn{display:inline-block;background:linear-gradient(135deg,#3498db,#2980b9);color:#fff;padding:8px 18px;border-radius:30px;font-size:1em;font-weight:500;text-decoration:none;transition:.2s;border:none;cursor:pointer}
+    .nav-btn:hover{background:linear-gradient(135deg,#2980b9,#3498db);transform:translateY(-2px) scale(1.04)}
+    .logout-btn{background:linear-gradient(135deg,#e74c3c,#c0392b)}
+    .logout-btn:hover{background:linear-gradient(135deg,#c0392b,#e74c3c)}
+    .content{padding:26px 30px 32px}
+    .chat-wrap{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:16px}
+    .chat-title{font-size:1.2em;font-weight:700;color:#2c3e50;margin-bottom:10px}
+    .chat-box{max-height:560px;min-height:360px;overflow:auto;border:1px solid #e5e7eb;border-radius:12px;padding:14px;background:#fafafa}
+    .msg{margin:10px 0;display:flex}
+    .msg.user{justify-content:flex-end}
+    .bubble{max-width:80%;padding:12px 14px;border-radius:14px;border:1px solid #e5e7eb;line-height:1.6}
+    .msg.user .bubble{background:#e7f1ff;border-color:#cfe0ff}
+    .msg.assistant .bubble{background:#f8f9fa}
+    .meta{margin-top:8px;font-size:.85em;color:#6b7280}
+    .typing{display:inline-flex;align-items:center;gap:8px}
+    .dot{width:8px;height:8px;border-radius:50%;background:#9aa7b2;animation:bounce 1.2s infinite}
+    .dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
+    @keyframes bounce{0%,80%,100%{transform:scale(0.6);opacity:.5}40%{transform:scale(1);opacity:1}}
+    .input-row{display:flex;gap:8px;margin-top:12px}
+    .input{flex:1;border:2px solid #e0e0e0;border-radius:12px;padding:14px 16px;font-size:1em;outline:none}
+    .send-btn{border:none;border-radius:12px;padding:12px 16px;font-weight:700;cursor:pointer;background:linear-gradient(135deg,#3498db,#2980b9);color:#fff}
+    .send-btn:disabled{opacity:.6;cursor:not-allowed}
+    .examples{background:#e7f1ff;border-radius:12px;padding:16px;margin-top:16px}
+    .examples h3{font-size:1.05em;margin-bottom:10px}
+    .chip{display:inline-block;background:#fff;border:2px solid #3498db;color:#3498db;padding:8px 12px;margin:6px;border-radius:999px;cursor:pointer;font-weight:600}
+    .chip:hover{background:#3498db;color:#fff}
+    .footer{background:#2c3e50;color:#fff;text-align:center;padding:18px;font-size:.95em;opacity:.9}
+    @media (max-width:768px){.container{margin:8px;border-radius:16px}.chat-box{min-height:300px}}
+    mark{background:#fff2ac;padding:0 .2em;border-radius:.2em}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🤖 보험 약관 RAG 챗봇</h1>
+      <p>자연어로 질문하면, 관련 약관을 찾아 근거와 함께 답해드려요.</p>
+      <div class="nav-bar">
+        {% if user.is_authenticated %}
+          <form action="{% url 'logout' %}" method="post" style="display:inline;">{% csrf_token %}
+            <button type="submit" class="nav-btn logout-btn">로그아웃</button>
+          </form>
+        {% endif %}
+        <a href="{% url 'home' %}" class="nav-btn">홈으로</a>
+      </div>
+    </div>
+
+    <div class="content">
+      {% if user.is_authenticated %}
+      <div style="background:#e8f4f8;border:2px solid #3498db;border-radius:12px;padding:14px;margin-bottom:14px">
+        <strong>👤 {{ user.username }}</strong>님, 궁금한 약관을 물어보세요.
+      </div>
+      {% endif %}
+
+      <div class="chat-wrap">
+        <div class="chat-title">대화</div>
+        <div id="chatBox" class="chat-box"></div>
+
+        <div class="input-row">
+          <input id="chatInput" class="input" type="text"
+                 placeholder="예) 음주운전 사고 시 보상여부는? / 무사고 할인 기준은?"
+                 onkeypress="if(event.key==='Enter'){sendChat()}">
+
+          <select id="answerMode" class="input" style="max-width:160px;flex:0 0 160px">
+            <option value="brief">간단</option>
+            <option value="normal" selected>자세히</option>
+            <option value="clauses">조항만</option>
+          </select>
+
+          <button id="chatSend" class="send-btn" onclick="sendChat()">질문하기</button>
+        </div>
+      </div>
+
+      <div class="examples">
+        <h3>💡 예시 질문</h3>
+        <span class="chip" onclick="quickAsk('음주운전으로 사고가 났을 때 보상되나요?')">음주운전 보상 여부</span>
+        <span class="chip" onclick="quickAsk('무사고 할인은 어떻게 적용되나요?')">무사고 할인 기준</span>
+        <span class="chip" onclick="quickAsk('가족 특약 혜택은 어떻게 되나요?')">가족 특약</span>
+        <span class="chip" onclick="quickAsk('차량 도난 시 보상 기준은?')">도난 보상</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p>RAG + Pinecone 기반 약관 챗봇 — 정확한 가입 전 반드시 원문 약관을 확인하세요.</p>
+  </div>
+
+  <script>
+    const MEDIA_BASE = "{{ MEDIA_URL|default:'/documents/' }}";  // settings.MEDIA_URL 전달됨
+
+    function getCookie(name){
+      let v=null;
+      if(document.cookie&&document.cookie!==''){
+        const cookies=document.cookie.split(';');
+        for(let i=0;i<cookies.length;i++){
+          const c=cookies[i].trim();
+          if(c.substring(0,name.length+1)===(name+'=')){ v=decodeURIComponent(c.substring(name.length+1));break; }
+        }
+      }
+      return v;
+    }
+
+    const chatBox = document.getElementById('chatBox');
+
+    function appendMsg(role, html, id=null){
+      const wrap=document.createElement('div');
+      wrap.className='msg '+role;
+      const bubble=document.createElement('div');
+      bubble.className='bubble';
+      bubble.innerHTML=html;
+      if(id) bubble.id=id;
+      wrap.appendChild(bubble);
+      chatBox.appendChild(wrap);
+      chatBox.scrollTop=chatBox.scrollHeight;
+    }
+
+    function addThinkingBubble(){
+      const id='pending-'+Date.now();
+      const html=`<div class="typing"><span>관련 약관을 찾는 중이에요...</span>
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+      appendMsg('assistant', html, id);
+      return id;
+    }
+
+    function replaceBubble(id, html){
+      const el=document.getElementById(id);
+      if(el){ el.innerHTML = html; }
+      chatBox.scrollTop=chatBox.scrollHeight;
+    }
+
+    function quickAsk(q){
+      const input=document.getElementById('chatInput');
+      input.value=q;
+      sendChat();
+    }
+
+    function clamp01(x){ return Math.max(0,Math.min(0.999,Number(x)||0)); }
+
+    // 경로 컴포넌트 안전 인코딩 (한글/공백 대응)
+    function encodePath(p){
+      return String(p||'').split('/').map(encodeURIComponent).join('/');
+    }
+
+    // 간단 키워드 하이라이트
+    function highlight(text, query){
+      try{
+        const terms = (query||'').split(/\s+/).filter(t=>t.length>=2);
+        if(!terms.length) return text;
+        let out = text;
+        terms.forEach(t=>{
+          const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\\\$&');
+          out = out.replace(new RegExp(esc, 'gi'), m => `<mark>${m}</mark>`);
+        });
+        return out;
+      }catch(e){ return text; }
+    }
+
+    async function sendChat(){
+      const inp=document.getElementById('chatInput');
+      const mode=(document.getElementById('answerMode').value||'normal');
+      const btn=document.getElementById('chatSend');
+      const q=(inp.value||'').trim();
+      if(!q){ inp.focus(); return; }
+
+      appendMsg('user', q);
+      inp.value=''; btn.disabled=true;
+      const pendingId = addThinkingBubble();
+
+      try{
+        const r=await fetch('/insurance-recommendation/',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','X-CSRFToken':getCookie('csrftoken')},
+          body:JSON.stringify({query:q, top_k:12, answer_mode: mode})
+        });
+        const data=await r.json();
+
+        if(!data.success){
+          replaceBubble(pendingId, `<div style="color:#b91c1c">에러: ${data.error||'요청 실패'}</div>`);
+          return;
+        }
+
+        const answerHtml = highlight((data.answer||'').replace(/\n/g,'\n'), q);
+
+        /* ▼ 근거 표시: "회사 / p.N · 해당 페이지" + /documents/<회사>/<회사>.pdf#page=N */
+        const refs=(data.references||[]).map((s,i)=>{
+          const page = s.page || '';
+          const company = s.company || '?';
+          // 회사명 기반 문서 경로 조합
+          const docPath = `${encodePath(company)}/${encodePath(company)}.pdf`;
+          const link = page ? `<a href="/documents/${docPath}#page=${page}" target="_blank">원문 보기</a>` : '';
+          return `(${i+1}) ${company}${page?` / p.${page}`:''} ${link}`;
+        }).join('<br/>');
+
+        const html = `
+          <div style="white-space:pre-wrap">${answerHtml}</div>
+          ${refs? `<div class="meta">근거<br/>${refs}</div>`:''}
+        `;
+        replaceBubble(pendingId, html);
+      }catch(e){
+        replaceBubble(pendingId, `<div style="color:#b91c1c">요청 중 오류가 발생했습니다.</div>`);
+        console.error(e);
+      }finally{
+        btn.disabled=false;
+      }
+    }
+  </script>
+</body>
+</html>
