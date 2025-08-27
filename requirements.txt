@@ -53,7 +53,11 @@ requests==2.32.4
 safetensors==0.5.3
 scikit-learn==1.7.1
 scipy==1.15.3
+<<<<<<< HEAD
 ——extra-index-url https://download.pytorch.org/whl/cpu
+=======
+--extra-index-url https://download.pytorch.org/whl/cpu
+>>>>>>> ba732073c9c432ca4ccd0c4f5c7aaa1a2e257b57
 torch==2.8.0+cpu
 sentence-transformers==5.0.0
 six==1.17.0
