@@ -114,4 +114,5 @@ LOGIN_URL = "/login/"
 X_FRAME_OPTIONS = "SAMEORIGIN"
 
 DOCUMENTS_URL = "/documents/"
-DOCUMENTS_ROOT = BASE_DIR / "documents"
+# 수정 (실제 파일이 insurance_app/documents에 있다면)
+DOCUMENTS_ROOT = BASE_DIR / "insurance_app" / "documents"

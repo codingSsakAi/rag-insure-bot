@@ -102,6 +102,7 @@ def call_llm_via_project_client(prompt: str) -> str:
 # ────────────────────────────────────────────────────────────────────────────────
 # 문서 경로 추정 유틸: 회사/파일.pdf 상대경로 생성
 # ────────────────────────────────────────────────────────────────────────────────
+# ✅ insurance_app/documents 경로로 수정
 DOCS_DIR = Path(__file__).resolve().parent / "documents"
 
 def _norm_key_ko(s: str) -> str:
@@ -109,8 +110,13 @@ def _norm_key_ko(s: str) -> str:
     return re.sub(r"\s+", "", t).lower()
 
 def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
+    """
+    주어진 회사명이나 파일 힌트로부터 실제 PDF 파일의 상대 경로를 추측합니다.
+    DOCS_DIR = insurance_app/documents 기준으로 작동합니다.
+    """
     try:
-        _ = DOCS_DIR.exists()
+        if not DOCS_DIR.exists():
+            return None
     except Exception:
         return None
 
@@ -118,27 +124,47 @@ def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
     if file_hint:
         hint = (file_hint or "").strip()
         if hint.lower().endswith(".pdf"):
+            # 직접 파일 경로
             p = (DOCS_DIR / hint)
             if p.exists():
                 return str(p.relative_to(DOCS_DIR)).replace("\\", "/")
+            # 회사 폴더 안에서 찾기
             for d in DOCS_DIR.iterdir():
                 if d.is_dir():
                     cand = d / hint
                     if cand.exists():
                         return f"{d.name}/{hint}"
 
-    # 2) 회사 폴더명 일치
+    # 2) 회사 폴더명 일치 (정확한 매칭)
     key = _norm_key_ko(company)
     if key:
         for d in DOCS_DIR.iterdir():
             if d.is_dir() and _norm_key_ko(d.name) == key:
+                # 해당 폴더에서 PDF 파일 찾기
                 pdfs = list(d.glob("*.pdf"))
                 if pdfs:
+                    # 회사명과 같은 이름의 PDF를 우선적으로 찾기
+                    for pdf in pdfs:
+                        if _norm_key_ko(pdf.stem) == key:
+                            return f"{d.name}/{pdf.name}"
+                    # 없으면 첫 번째 PDF
                     return f"{d.name}/{pdfs[0].name}"
 
-    # 3) 느슨 탐색
+    # 3) 느슨한 탐색 (부분 매칭)
     loose = _norm_key_ko(company or file_hint)
     if loose:
+        # 폴더명에서 부분 매칭
+        for d in DOCS_DIR.iterdir():
+            if d.is_dir() and loose in _norm_key_ko(d.name):
+                pdfs = list(d.glob("*.pdf"))
+                if pdfs:
+                    # 회사명과 유사한 이름의 PDF 찾기
+                    for pdf in pdfs:
+                        if loose in _norm_key_ko(pdf.stem):
+                            return f"{d.name}/{pdf.name}"
+                    return f"{d.name}/{pdfs[0].name}"
+        
+        # 파일명에서 직접 검색
         for f in DOCS_DIR.rglob("*.pdf"):
             stem = _norm_key_ko(f.stem)
             if loose in stem:
@@ -193,7 +219,7 @@ _DISC_KEYS  = ["무사고", "할인", "할인율", "마일리지", "주행거리
 _FAM_KEYS   = ["가족", "가족운전자", "운전자범위", "한정", "부부", "자녀", "배우자", "형제자매"]
 _THEFT_KEYS = ["도난", "절도", "강도", "절취", "도난손해", "차량도난", "무단사용", "침입", "손괴", "파손", "분실"]
 
-# “약관형” 판별용 광의 키워드
+# "약관형" 판별용 광의 키워드
 _POLICY_HINTS = set(_DUI_KEYS + _DISC_KEYS + _FAM_KEYS + _THEFT_KEYS + [
     "약관","특별약관","보상","담보","면책","대인","대물","자차","자기신체","의무보험","보험금","청구","배상"
 ])
@@ -447,7 +473,7 @@ def _format_natural_korean_answer(query: str, raw_answer: str, references: List[
     topic = _detect_topic(query, body_text)
 
     if topic == "family":
-        return ("결론: ‘가족운전자 한정’(가족 특약)을 가입하면 약정된 가족 범위(예: 본인·배우자·자녀·부모 등) 내 운전자에 한해 보장이 적용되고, "
+        return ("결론: '가족운전자 한정'(가족 특약)을 가입하면 약정된 가족 범위(예: 본인·배우자·자녀·부모 등) 내 운전자에 한해 보장이 적용되고, "
                 "가족 범위 밖 운전자의 사고는 보상 대상에서 제외됩니다. 회사·상품별로 가족의 정의와 예외, 제출서류(가족관계증명서 등)가 다를 수 있으니 해당 약관 본문을 확인하세요.")
     if topic == "dui":
         pages = _page_list_text(references); ref_hint = (f" (예: p.{pages})" if pages else "")
@@ -458,7 +484,7 @@ def _format_natural_korean_answer(query: str, raw_answer: str, references: List[
                 "또한 1년 미만 계약 등 일부 조건에서는 가입이 제한될 수 있습니다. 자세한 요건은 회사별 보통·특별약관을 확인하세요.")
     if topic == "theft":
         pages = _page_list_text(references); ref_hint = (f" (예: p.{pages})" if pages else "")
-        return ("결론: 차량 ‘도난/절도’ 손해는 보통 ‘자기차량손해(자차)’ 또는 ‘도난손해’ 관련 특별약관으로 담보됩니다. "
+        return ("결론: 차량 '도난/절도' 손해는 보통 '자기차량손해(자차)' 또는 '도난손해' 관련 특별약관으로 담보됩니다. "
                 "도난 사실 확인서류(경찰신고 접수 등) 제출이 필요하며, 보관/열쇠관리 소홀, 가족·동거인 등의 절취, 불법주정차 중 방치 등은 면책될 수 있습니다. "
                 "감가 및 약정 자기부담금이 적용됩니다." + ref_hint)
 
@@ -637,27 +663,28 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
             answer_mode=answer_mode
         )
 
-        # 링크 보정
+        # 링크 보정 - JavaScript에서 처리할 수 있도록 회사명 정보만 제공
         refs_out: List[Dict[str, Any]] = []
         for _r in summary.get("references", []):
             _company = (_r.get("company") or "").strip()
             _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
-            _rel = _fileval
-            if not _fileval.lower().endswith(".pdf") or "/" not in _fileval:
-                _guess = _guess_pdf_relpath(company=_company, file_hint=_fileval)
-                if _guess: _rel = _guess
-            _r2 = dict(_r); _r2["file"] = _rel or _fileval; _r2["url"]  = f"/documents/{_rel}" if _rel else None
+            
+            # JavaScript에서 resolveDocUrl 함수가 회사명으로 URL을 찾을 수 있도록 
+            # 회사명 정보를 그대로 유지
+            _r2 = dict(_r)
+            _r2["company"] = _company
+            _r2["file"] = _fileval
+            # JavaScript에서 동적으로 URL을 생성하므로 서버에서는 URL을 설정하지 않음
             refs_out.append(_r2)
 
         results_out: List[Dict[str, Any]] = []
         for _r in summary.get("results", []):
             _company = (_r.get("company") or "").strip()
             _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
-            _rel = _fileval
-            if not _fileval.lower().endswith(".pdf") or "/" not in _fileval:
-                _guess = _guess_pdf_relpath(company=_company, file_hint=_fileval)
-                if _guess: _rel = _guess
-            _r2 = dict(_r); _r2["file"] = _rel or _fileval; _r2["url"]  = f"/documents/{_rel}" if _rel else None
+            
+            _r2 = dict(_r)
+            _r2["company"] = _company  
+            _r2["file"] = _fileval
             results_out.append(_r2)
 
         return JsonResponse({
@@ -743,8 +770,3 @@ def glossary_api(request: HttpRequest) -> HttpResponse:
         "updated_at": t.updated_at.isoformat(),
     } for t in terms[:max(1, min(500, limit))]]
     return JsonResponse({"success": True, "count": len(payload), "results": payload})
-
-
-
-
-
