@@ -53,3 +53,12 @@ if _portal_static_root.exists() and settings.DEBUG:
             {"document_root": _portal_static_root / "insurance_portal"},
         ),
     ]
+_portal_static_root = settings.BASE_DIR / "0826-5" / "insurance_portal" / "static" / "insurance_portal"
+if _portal_static_root.exists() and settings.DEBUG:
+    urlpatterns += [
+        re_path(
+            r"^static/insurance_portal/(?P<path>.*)$",
+            static_serve,
+            {"document_root": _portal_static_root},
+        ),
+    ]
