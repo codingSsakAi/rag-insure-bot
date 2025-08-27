@@ -22,6 +22,7 @@
                         text-decoration:none;font-weight:700;cursor:pointer}
     .logout{background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;border-color:transparent}
   </style>
+  <link rel="stylesheet" href="{% static 'insurance_portal/portal.css' %}">
 </head>
 <body>
   <div class="container">
@@ -53,5 +54,20 @@
       {% endif %}
     </div>
   </div>
+  <script>
+    window.PORTAL_MENU = {
+      brand: '보험 포털',
+      position: 'right',
+      items: [
+        { title: '🏠 홈',           url: '{% url "insurance_app:home" %}' },
+        { title: '🤖 약관 챗봇',     url: '{% url "insurance_app:insurance_recommendation" %}' },
+        { title: '📊 보험 추천',     url: '{% url "insurance_app:recommend_insurance" %}' },
+        { title: '📘 용어 사전',     url: '{% url "insurance_app:glossary" %}' },
+        { title: '📝 새 협의서',     url: '{% url "accident_project:agreement_new" %}' },
+        { title: '📂 내 협의서',     url: '{% url "accident_project:mypage_agreements" %}' }
+      ]
+    };
+</script>
+  <script src="{% static 'insurance_portal/portal.js' %}" defer></script>
 </body>
 </html>
