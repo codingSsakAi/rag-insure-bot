@@ -1,4 +1,3 @@
-<!-- insurance_app/templates/home.html -->
 {% load static %}
 <!DOCTYPE html>
 <html lang="ko">
@@ -22,7 +21,40 @@
                         text-decoration:none;font-weight:700;cursor:pointer}
     .logout{background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;border-color:transparent}
   </style>
-  <link rel="stylesheet" href="{% static 'insurance_portal/portal.css' %}">
+
+  <!-- 1) 기존 포털 CSS 시도 (0826-5/insurance_portal/static/insurance_portal/portal.css) -->
+  <link id="portal-css" rel="stylesheet" href="{% static 'insurance_portal/portal.css' %}">
+  <!-- 2) 폴백용: 외부 CSS가 404면 아래 스크립트가 미니 CSS를 주입 -->
+  <script>
+    // 미니 CSS 문자열 (외부 CSS 404일 때만 주입)
+    window.__PORTAL_FALLBACK_INJECT_CSS__ = function(){
+      if (document.getElementById('ip-fallback-style')) return;
+      const css = `
+:root{--ipz:1040;--ip-bg:#0b1220f2;--ip-panel:#0f172a;--ip-text:#dbeafe;--ip-muted:#94a3b8;--ip-border:#233150;}
+#ip-fab{position:fixed;right:22px;bottom:22px;z-index:var(--ipz);width:56px;height:56px;border-radius:999px;border:0;cursor:pointer;
+  background:linear-gradient(135deg,#2563eb,#0891b2);color:#fff;box-shadow:0 10px 24px rgba(0,0,0,.24);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700}
+#ip-fab:hover{transform:translateY(-1px);box-shadow:0 14px 30px rgba(0,0,0,.28)}
+#ip-overlay{position:fixed;inset:0;background:rgba(0,0,0,.36);z-index:calc(var(--ipz) - 1);opacity:0;visibility:hidden;transition:.2s ease}
+#ip-overlay.open{opacity:1;visibility:visible}
+#ip-panel{position:fixed;top:0;bottom:0;width:min(360px,86vw);z-index:var(--ipz);background:var(--ip-panel);color:var(--ip-text);
+  box-shadow:0 20px 50px rgba(0,0,0,.4);transition:transform .26s ease;border-left:1px solid var(--ip-border)}
+#ip-panel.right{right:0;transform:translateX(100%)} #ip-panel.left{left:0;transform:translateX(-100%)}
+#ip-panel.open.right,#ip-panel.open.left{transform:translateX(0)}
+#ip-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:1px solid var(--ip-border)}
+#ip-title{font-weight:900;font-size:16px;letter-spacing:.5px}
+#ip-close{background:transparent;color:var(--ip-muted);border:0;font-size:22px;cursor:pointer}
+#ip-close:hover{color:#fff}
+#ip-list{padding:10px 6px 18px;overflow:auto;height:calc(100% - 56px)}
+.ip-item a{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:12px;margin:6px 8px;color:var(--ip-text);text-decoration:none;
+  border:1px solid transparent;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.02))}
+.ip-item a:hover{border-color:var(--ip-border);background:linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.03))}
+.ip-item .ip-sub{font-size:12px;color:var(--ip-muted)}
+.ip-item .ip-icon{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;background:#0b1220}
+      `;
+      const s=document.createElement('style');
+      s.id='ip-fallback-style'; s.textContent=css; document.head.appendChild(s);
+    };
+  </script>
 </head>
 <body>
   <div class="container">
@@ -54,20 +86,93 @@
       {% endif %}
     </div>
   </div>
+
+  <!-- 포털 메뉴 설정 -->
   <script>
     window.PORTAL_MENU = {
       brand: '보험 포털',
       position: 'right',
       items: [
-        { title: '🏠 홈',           url: '{% url "insurance_app:home" %}' },
-        { title: '🤖 약관 챗봇',     url: '{% url "insurance_app:insurance_recommendation" %}' },
-        { title: '📊 보험 추천',     url: '{% url "insurance_app:recommend_insurance" %}' },
-        { title: '📘 용어 사전',     url: '{% url "insurance_app:glossary" %}' },
+        { title: '🏠 홈',           url: '{% url "home" %}' },
+        { title: '🤖 약관 챗봇',     url: '{% url "insurance_recommendation" %}' },
+        { title: '📊 보험 추천',     url: '{% url "recommend_insurance" %}' },
+        { title: '📘 용어 사전',     url: '{% url "glossary" %}' },
         { title: '📝 새 협의서',     url: '{% url "accident_project:agreement_new" %}' },
         { title: '📂 내 협의서',     url: '{% url "accident_project:mypage_agreements" %}' }
       ]
     };
-</script>
-  <script src="{% static 'insurance_portal/portal.js' %}" defer></script>
+  </script>
+
+  <!-- 3) 기존 포털 JS 시도 -->
+  <script id="portal-js" src="{% static 'insurance_portal/portal.js' %}" defer></script>
+
+  <!-- 4) JS 폴백: 외부 JS 로드 실패 시 미니 토글 JS 주입 -->
+  <script>
+    (function(){
+      // 미니 JS (외부 portal.js가 404일 때만 사용)
+      function injectMiniJS(){
+        if (window.__PORTAL_MINI_INJECTED__) return;
+        window.__PORTAL_MINI_INJECTED__ = true;
+
+        // CSS 폴백도 보장
+        if (typeof window.__PORTAL_FALLBACK_INJECT_CSS__ === 'function') {
+          window.__PORTAL_FALLBACK_INJECT_CSS__();
+        }
+
+        const cfg = (window.PORTAL_MENU || {});
+        const brand = cfg.brand || 'Insurance Portal';
+        const pos   = (cfg.position === 'left') ? 'left' : 'right';
+        const items = Array.isArray(cfg.items) ? cfg.items : [];
+
+        function el(tag, attrs={}, children=[]){
+          const e=document.createElement(tag);
+          Object.entries(attrs||{}).forEach(([k,v])=>{
+            if(k==='class') e.className=v;
+            else if(k==='text') e.textContent=v;
+            else e.setAttribute(k,v);
+          });
+          (children||[]).forEach(c=>e.appendChild(c));
+          return e;
+        }
+        function build(){
+          const overlay = el('div', { id:'ip-overlay','aria-hidden':'true' });
+          const panel   = el('aside', { id:'ip-panel' }); panel.classList.add(pos);
+          const head    = el('div',{ id:'ip-head' },[
+            el('div',{ id:'ip-title', text:brand }),
+            el('button',{ id:'ip-close', 'aria-label':'닫기', title:'닫기' },[ el('span',{ text:'×' }) ])
+          ]);
+          const list = el('div',{ id:'ip-list' });
+          items.forEach(it=>{
+            if(!it||!it.title||!it.url) return;
+            const a = el('a',{ href: it.url });
+            a.innerHTML = `<span class="ip-icon">≡</span><span><div style="font-weight:800">${it.title}</div>${it.desc?`<div class="ip-sub">${it.desc}</div>`:''}</span>`;
+            list.appendChild(el('div',{ class:'ip-item' }, [a]));
+          });
+          panel.appendChild(head); panel.appendChild(list);
+          const fab = el('button',{ id:'ip-fab','aria-label':'메뉴 열기',title:'메뉴' },[ el('span',{ text:'≡' }) ]);
+
+          function open(){ overlay.classList.add('open'); panel.classList.add('open'); overlay.setAttribute('aria-hidden','false'); document.body.style.overflow='hidden'; }
+          function close(){ overlay.classList.remove('open'); panel.classList.remove('open'); overlay.setAttribute('aria-hidden','true'); document.body.style.overflow=''; }
+          fab.addEventListener('click', open);
+          overlay.addEventListener('click', close);
+          head.querySelector('#ip-close').addEventListener('click', close);
+          document.addEventListener('keydown', e=>{ if(e.key==='Escape') close(); });
+
+          document.body.appendChild(overlay);
+          document.body.appendChild(panel);
+          document.body.appendChild(fab);
+        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', build); else build();
+      }
+
+      // 외부 JS 로드 실패 감지
+      const js = document.getElementById('portal-js');
+      let loaded = false;
+      js.addEventListener('load', ()=>{ loaded = true; });
+      js.addEventListener('error', injectMiniJS);
+      // 일부 브라우저에서 error 이벤트 안 나올 때를 대비한 타임아웃
+      setTimeout(()=>{ if(!loaded && !window.__PORTAL_MINI_INJECTED__) injectMiniJS(); }, 900);
+    })();
+  </script>
 </body>
 </html>
