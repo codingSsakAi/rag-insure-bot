@@ -2,7 +2,6 @@
 # 목적: 포털 앱 전용 라우팅 정의 (주: 기존 insurance_app은 수정하지 않음)
 
 from django.urls import path
-from . import views
 from .views import chatbot, weekly
 from .views import fault_answer_view
 
@@ -18,9 +17,5 @@ urlpatterns = [
 
     # 보험 상식(weekly) 페이지 및 부분 렌더
     path("weekly/", weekly.page, name="portal_weekly"),
-
-    path("", views.portal_home, name="home"),
-    path("knowledge/", views.claim_knowledge, name="claim_knowledge"),
-    path("healthz/", views.healthz, name="healthz"),
     
 ]

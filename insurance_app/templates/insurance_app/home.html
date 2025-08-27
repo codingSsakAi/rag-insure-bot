@@ -51,7 +51,9 @@
     </div>
   </div>
 
-  <!-- 원본 토글 로더: 아카이브의 CSS/JS만 로드, 전역 메뉴 미주입 -->
-  <script src="{% static 'insurance_portal/loader_strict.js' %}" defer></script>
+  <!-- ✅ 아카이브에서 제공된 토글/FAB UI + 관련 스크립트/모달 일체 삽입 -->
+  {% include "insurance_portal/partials/_portal_inject.html" %}
+
+  <!-- ⚠️ 이전에 시도했던 loader.js/loader_strict.js, window.PORTAL_MENU 등의 임시 스크립트는 모두 제거하세요 -->
 </body>
 </html>
