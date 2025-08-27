@@ -2,6 +2,7 @@
 from pathlib import Path
 from dotenv import load_dotenv
 import os
+import importlib.util
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -12,8 +13,12 @@ ALLOWED_HOSTS = ["*", "localhost", "127.0.0.1"]
 
 # ───────────────── 앱 구성 ─────────────────
 INSTALLED_APPS = [
-    "django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes",
-    "django.contrib.sessions", "django.contrib.messages", "django.contrib.staticfiles",
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
     # 프로젝트 앱
     "insurance_app",
     "accident_project",
@@ -21,8 +26,8 @@ INSTALLED_APPS = [
     "rest_framework",
 ]
 
-# insurance_portal 이 폴더에 있을 때만 추가(없어도 죽지 않게)
-if (BASE_DIR / "insurance_portal").exists() or (BASE_DIR / "0826-5" / "insurance_portal").exists():
+# insurance_portal 파이썬 모듈이 실제로 import 가능할 때만 등록 (0826-5 폴더만 있고 모듈이 없을 수도 있으므로)
+if importlib.util.find_spec("insurance_portal") is not None:
     INSTALLED_APPS.append("insurance_portal")
 
 AUTH_USER_MODEL = "insurance_app.CustomUser"
@@ -90,10 +95,11 @@ STATIC_URL = "/static/"
 _static_candidates = [
     BASE_DIR / "insurance_app" / "static",
     BASE_DIR / "accident_project" / "static",
-    BASE_DIR / "insurance_portal" / "static",
-    BASE_DIR / "0826-5" / "insurance_portal" / "static",
+    BASE_DIR / "insurance_portal" / "static",              # 프로젝트 루트에 있을 때
+    BASE_DIR / "0826-5" / "insurance_portal" / "static",   # ✅ 외부 폴더(요청하신 경로)
 ]
 STATICFILES_DIRS = [p for p in _static_candidates if p.exists()]
+
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 MEDIA_URL = "/media/"
@@ -108,6 +114,6 @@ LOGIN_URL = "/login/"
 # iframe 미리보기 허용(동일 출처만)
 X_FRAME_OPTIONS = "SAMEORIGIN"
 
-
+# 문서(약관 PDF) 서빙용
 DOCUMENTS_URL = "/documents/"
 DOCUMENTS_ROOT = BASE_DIR / "documents"
