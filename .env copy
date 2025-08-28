@@ -1,0 +1,17 @@
+PINECONE_REGION=us-east-1
+PINECONE_INDEX_NAME=insturance-clauses-second
+TERM_GATE_MODE=auto   # auto|and|or|off
+STRICT_FILL_MIN=3
+LLM_MODEL=gpt-5-nano
+# 임베딩 모델 이름(표시용)
+EMBED_MODEL=intfloat/multilingual-e5-large
+EMBED_DIM=1024
+# 결과 과도 필터 방지 노브
+RAG_MIN_RATIO=0.35
+RAG_MIN_COUNT=5
+
+# LLM 정제 사용(선택)
+USE_LLM_REFINE=1
+LLM_REFINE_MODEL=gpt-5-nano
+ANS_LLM_MODEL=gpt-5-nano
+ANS_MAX_TOKENS=600
