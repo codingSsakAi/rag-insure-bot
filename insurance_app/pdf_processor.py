@@ -1,5 +1,7 @@
 import PyPDF2
 from sentence_transformers import SentenceTransformer
+from .utils.vec_compat import add_doc_prefix, adapt_vector, read_index_dim, is_e5
+import os
 import uuid
 import os
 import json
@@ -9,7 +11,7 @@ from typing import List, Dict, Any
 from .pinecone_client import get_index
 
 try:
-    model = SentenceTransformer('intfloat/multilingual-e5-large', local_files_only=True)
+    model = SentenceTransformer(os.getenv('EMBED_MODEL', 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'), local_files_only=True)
 except Exception:
     model = None  # 앱은 먼저 뜨고, 최초 호출 시 안내/지연 로딩
 
@@ -165,10 +167,15 @@ class EnhancedPDFProcessor:
         return chunks
     
     def embed_text(self, text: str) -> List[float]:
-        """텍스트를 벡터로 임베딩"""
+        """텍스트를 벡터로 임베딩 (프리픽스/차원 어댑트 포함)"""
         try:
-            embedding = model.encode(text)
-            return embedding.tolist()
+            model_name = os.getenv('EMBED_MODEL', 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
+            doc_texts = add_doc_prefix([text], model_name)
+            embedding = model.encode(doc_texts[0])
+            # adapt to current index dim
+            target_dim = read_index_dim(self.index)
+            adapted = adapt_vector(embedding.tolist() if hasattr(embedding, 'tolist') else embedding, target_dim)
+            return adapted
         except Exception as e:
             print(f"임베딩 오류: {e}")
             return None
