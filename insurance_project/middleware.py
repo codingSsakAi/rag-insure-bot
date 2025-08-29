@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import mimetypes
+import logging
+import traceback
 from pathlib import Path
 from typing import Iterable
 
 from django.conf import settings
 from django.http import HttpResponse
 from django.utils.deprecation import MiddlewareMixin
+from django.template import TemplateDoesNotExist
 
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
 #  A) /static/insurance_portal/**  →  0826-5/insurance_portal/static/** 브릿지
@@ -47,7 +51,7 @@ class PortalStaticBridgeMiddleware(MiddlewareMixin):
             data, ctype = self._try_open(rel)
             if data is not None:
                 resp = HttpResponse(data, content_type=ctype)
-                # 간단 캐시 헤더(개발용)
+                # 간단 캐시 헤더(개발/프리티어 환경)
                 resp["Cache-Control"] = "max-age=300, public"
                 return resp
         return self.get_response(request)
@@ -74,17 +78,17 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
             "/static/insurance_portal/portal.css",
             "/static/insurance_portal/style.css",
             "/static/insurance_portal/styles.css",
+            "/static/insurance_portal/css/fab.css",  # 실제 배포본에 존재 확인됨
         ]
         self.js_candidates: list[str] = [
             "/static/insurance_portal/loader_strict.js",  # 우리가 쓰던 로더 (있으면 베스트)
             "/static/insurance_portal/loader.js",
             "/static/insurance_portal/portal.js",
             "/static/insurance_portal/js/portal.js",      # 아카이브에서 확인된 경로
+            "/static/insurance_portal/js/navigation_handler.js",  # 실제 배포본에 존재 확인됨
         ]
 
     def _exists(self, url_path: str) -> bool:
-        # 우리의 StaticBridge가 /static/insurance_portal/**를 처리하므로,
-        # 파일 존재 체크는 로컬 디스크 기준으로도 함께 수행
         prefix = "/static/insurance_portal/"
         if not url_path.startswith(prefix):
             return False
@@ -154,3 +158,83 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
         if resp.has_header("Content-Length"):
             resp.headers["Content-Length"] = str(len(resp.content))
         return resp
+
+
+# ─────────────────────────────────────────────────────────────
+#  C) 예외 로그 강화: 어디서 500이 나는지 스택트레이스 보장
+# ─────────────────────────────────────────────────────────────
+class ExceptionLoggingMiddleware(MiddlewareMixin):
+    """
+    모든 예외를 서버 로그에 스택트레이스로 남김.
+    기존 동작에는 영향 주지 않고, 디버깅만 돕는다.
+    """
+    def __call__(self, request):
+        try:
+            return self.get_response(request)
+        except Exception as e:
+            logger.error("Unhandled exception at %s: %s", request.path, e)
+            traceback.print_exc()
+            raise
+
+
+# ─────────────────────────────────────────────────────────────
+#  D) 템플릿 폴백: 템플릿이 없어서 500일 때만 최소 페이지 반환
+#    (정상 템플릿 존재하면 절대 개입하지 않음)
+# ─────────────────────────────────────────────────────────────
+FALLBACK_PAGES: dict[str, str] = {
+    "glossary": """<!doctype html><meta charset="utf-8">
+    <title>용어집</title><h1>용어집</h1><p>템플릿을 찾을 수 없어 최소 페이지로 표시합니다.</p>""",
+    "login": """<!doctype html><meta charset="utf-8">
+    <title>로그인</title><h1>로그인</h1>
+    <form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="">
+    <label>아이디 <input name="username"></label><br>
+    <label>비밀번호 <input type="password" name="password"></label><br>
+    <button type="submit">로그인</button></form>""",
+    "signup": """<!doctype html><meta charset="utf-8">
+    <title>회원가입</title><h1>회원가입</h1>
+    <form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="">
+    <label>아이디 <input name="username"></label><br>
+    <label>비밀번호 <input type="password" name="password1"></label><br>
+    <label>비밀번호 확인 <input type="password" name="password2"></label><br>
+    <button type="submit">가입</button></form>""",
+    "insurance_recommendation": """<!doctype html><meta charset="utf-8">
+    <title>AI 약관 검색</title><h1>AI 약관 검색</h1>
+    <form id="f"><input id="q" placeholder="질문을 입력하세요">
+    <button>검색</button></form><pre id="out"></pre>
+    <script>
+    document.getElementById('f').onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await fetch('/insurance-recommendation/', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({query: document.getElementById('q').value})
+      });
+      const j = await r.json(); document.getElementById('out').textContent = JSON.stringify(j, null, 2);
+    };
+    </script>""",
+}
+
+class TemplateFallbackMiddleware(MiddlewareMixin):
+    """
+    TemplateDoesNotExist 발생시에만 경로별 최소 폴백 HTML을 반환.
+    정상 템플릿이 있으면 절대 개입하지 않음.
+    """
+    def __call__(self, request):
+        try:
+            return self.get_response(request)
+        except TemplateDoesNotExist as e:
+            path = request.path or ""
+            key = None
+            if path.startswith("/glossary"):
+                key = "glossary"
+            elif path.startswith("/login"):
+                key = "login"
+            elif path.startswith("/signup"):
+                key = "signup"
+            elif path.startswith("/insurance-recommendation"):
+                key = "insurance_recommendation"
+
+            if key and key in FALLBACK_PAGES:
+                logger.warning("Template missing for %s (%s). Serving fallback page.", path, e)
+                return HttpResponse(FALLBACK_PAGES[key], content_type="text/html; charset=utf-8", status=200)
+            # 폴백 대상이 아니면 원래 예외 재발생
+            raise
