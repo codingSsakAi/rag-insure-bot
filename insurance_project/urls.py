@@ -37,3 +37,8 @@ if getattr(settings, 'DEBUG', False):
         re_path(r'^documents/(?P<path>.*)$',
                 static_serve, {'document_root': str(documents_root)}),
     ]
+
+urlpatterns += [
+    re_path(r'^documents/(?P<path>.*)$',
+            static_serve, {'document_root': str(settings.DOCUMENTS_ROOT)}),
+]
