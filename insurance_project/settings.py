@@ -5,10 +5,11 @@ import sys
 load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
 DEBUG = os.getenv("DEBUG", "0") == "1"
-ALLOWED_HOSTS = getattr(globals(), 'ALLOWED_HOSTS', [])
-for _h in ('127.0.0.1', 'localhost'):
-    if _h not in ALLOWED_HOSTS:
-        ALLOWED_HOSTS.append(_h)
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", ".cloudtype.app,localhost,127.0.0.1").split(",")
+CSRF_TRUSTED_ORIGINS = os.getenv(
+    "CSRF_TRUSTED_ORIGINS",
+    "https://*.cloudtype.app,http://localhost,http://127.0.0.1"
+).split(",")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -18,7 +19,6 @@ sys.path.append(str(BASE_DIR / "0826-5"))
 # ───────────────── 보안/디버그 ─────────────────
 SECRET_KEY = os.getenv("SECRET_KEY")
 DEBUG = True
-ALLOWED_HOSTS = ["*", "localhost", "127.0.0.1"]
 
 # ───────────────── 앱 구성 ─────────────────
 INSTALLED_APPS = [
