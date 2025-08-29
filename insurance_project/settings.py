@@ -5,7 +5,10 @@ import sys
 load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
 DEBUG = os.getenv("DEBUG", "0") == "1"
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
+ALLOWED_HOSTS = getattr(globals(), 'ALLOWED_HOSTS', [])
+for _h in ('127.0.0.1', 'localhost'):
+    if _h not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_h)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
