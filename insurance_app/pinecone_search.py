@@ -1,4 +1,5 @@
 import os
+from insurance_app.services.embedding_provider import get_query_embedder
 from insurance_app.services.space_adapter import embed_query_to_e5space
 import re
 import unicodedata
@@ -230,15 +231,9 @@ def retrieve(query: str,
     """
     # 1) 쿼리 임베딩(프리픽스 적용) + 1024차원 어댑트
     q_text = _normalize(query)
-    if os.getenv("USE_SPACE_ADAPTER", "1") == "1":
-        q_vec = embed_query_to_e5space(q_text)   # 1024d(e5 공간)
-    else:
-        # (대안) 외부 e5-large 엔드포인트 사용 시, 필요하면 아래처럼:
-        # from insurance_app.services.embedding_client import embed_query_1024
-        # q_vec = embed_query_1024(q_text)
-        raise RuntimeError("USE_SPACE_ADAPTER=0인 경우 질의 임베딩 경로를 설정하세요.")
-    q_emb_small = embedder.encode_one(q_text)
-    q_emb = adapt_vector(q_emb_small, INDEX_DIM)
+    _embedder = get_query_embedder()                     # hf-remote(권장) 또는 small-adapter
+    q_vec_np = _embedder.embed([q_text])[0]              # numpy.ndarray(1024,)
+    q_emb = q_vec_np.astype("float32").tolist()          # Pinecone에 넣을 list[float]
 
     # 2) 필터 구성
     pine_filter: Dict[str, Any] = dict(filters or {})
