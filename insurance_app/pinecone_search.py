@@ -1,9 +1,6 @@
 import os
-from insurance_app.services.embedding_provider import get_query_embedder
-from insurance_app.services.space_adapter import embed_query_to_e5space
 import re
 import unicodedata
-import difflib
 from typing import List, Dict, Optional, Any
 
 # -----------------------
@@ -12,91 +9,28 @@ from typing import List, Dict, Optional, Any
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv(), override=True)
 
-from .utils.vec_compat import add_query_prefix, adapt_vector, read_index_dim
+# 원격 임베딩 프로바이더(다운로드/로컬 로딩 없음)
+from insurance_app.services.embedding_provider import get_query_embedder
 
+# vec utils
+from .utils.vec_compat import read_index_dim
 
-USE_BACKEND = (os.getenv("EMBED_BACKEND", "st") or "st").lower()   # "st" | "openai"
+# -----------------------
+# 설정/가중치
+# -----------------------
+USE_BACKEND = (os.getenv("EMBED_BACKEND", "st") or "st").lower()   # "st" | "openai" (유지용)
 EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 INDEX_NAME  = os.getenv("PINECONE_INDEX_NAME", "")
 NAMESPACE   = os.getenv("NAMESPACE") or None
-INDEX_DIM = None  # will be set after index init  # Pinecone 인덱스 차원 (검증용)
-# 검색 점수 가중치(노트북 개념 반영)
-W_SEMANTIC = float(os.getenv("W_SEMANTIC", "0.7"))   # 벡터 유사도 가중
+INDEX_DIM = None  # Pinecone 인덱스 차원 (아래에서 실제값으로 설정)
+
+W_SEMANTIC = float(os.getenv("W_SEMANTIC", "0.7"))   # 벡터 유사도 가중 (현재 랭킹 내부 가중치용)
 W_LEXICAL  = float(os.getenv("W_LEXICAL",  "0.3"))   # BM25/토큰겹침 가중
 W_RECENCY  = float(os.getenv("W_RECENCY",  "0.0"))   # year 메타 있을 때만 영향
 
-
-# e5 시리즈 차원별 권장 모델 맵
-E5_DIM_TO_MODEL = {
-    1024: "intfloat/multilingual-e5-large",
-    768:  "intfloat/multilingual-e5-base",
-    384:  "intfloat/multilingual-e5-small",  # 필요시
-}
-
+# e5 계열 판별/프리픽스
 def _is_e5(name: str) -> bool:
     return "e5" in (name or "").lower()
-
-DOC_PREFIX = "passage: " if (USE_BACKEND == "st" and _is_e5(EMBED_MODEL)) else ""
-Q_PREFIX   = "query: "   if (USE_BACKEND == "st" and _is_e5(EMBED_MODEL)) else ""
-
-# -----------------------
-# 임베딩 로더
-# -----------------------
-class Embedder:
-    """
-    - sentence-transformers: 모델 로드 실패 시 안전 폴백.
-    - e5 시리즈인 경우 INDEX_DIM과 불일치하면 자동으로 dim에 맞는 모델로 교체.
-    - OpenAI: 그대로 사용(차원은 호출 결과로 확인).
-    """
-    def __init__(self, backend: str, model_name: str, target_dim: int):
-        self.backend = backend
-        self.model_name = model_name
-        self.dim: Optional[int] = None
-
-        if backend == "openai":
-            from openai import OpenAI
-            self.client = OpenAI()
-        else:
-            from sentence_transformers import SentenceTransformer
-            # 1) 일단 시도
-            try:
-                self.model = SentenceTransformer(model_name)
-            except Exception as e:
-                # 잘못된 ID 등 → e5-large로 기본 폴백
-                fallback = E5_DIM_TO_MODEL.get(target_dim, "intfloat/multilingual-e5-large")
-                print(f"[WARN] Failed to load '{model_name}': {e}\n"
-                      f"       Falling back to '{fallback}'.")
-                self.model = SentenceTransformer(fallback)
-                self.model_name = fallback
-
-            # 2) 현재 모델 차원
-            try:
-                self.dim = self.model.get_sentence_embedding_dimension()
-            except Exception:
-                self.dim = len(self.model.encode(["dim_probe"], show_progress_bar=False)[0])
-
-            # 3) e5 시리즈이고 차원이 다르면, 타깃 차원에 맞는 모델로 자동 교체
-            if _is_e5(self.model_name) and self.dim != target_dim:
-                wanted = E5_DIM_TO_MODEL.get(target_dim)
-                if wanted and wanted != self.model_name:
-                    try:
-                        print(f"[INFO] Auto-switch model to match index dim: {self.model_name}({self.dim}) → {wanted}({target_dim})")
-                        self.model = SentenceTransformer(wanted)
-                        self.model_name = wanted
-                        self.dim = self.model.get_sentence_embedding_dimension()
-                    except Exception as e:
-                        raise RuntimeError(
-                            f"임베딩 모델을 인덱스 차원({target_dim})에 맞게 로드하지 못했습니다: {e}"
-                        )
-
-    def encode_one(self, text: str) -> List[float]:
-        if self.backend == "openai":
-            resp = self.client.embeddings.create(model=self.model_name, input=[text])
-            return resp.data[0].embedding
-        else:
-            return self.model.encode([text], show_progress_bar=False)[0].tolist()
-
-embedder = Embedder(USE_BACKEND, EMBED_MODEL, INDEX_DIM)
 
 # -----------------------
 # Lexical 보조 점수 (BM25 또는 토큰겹침)
@@ -148,38 +82,8 @@ def _recency_boost(years: list) -> list:
             boosts.append(1.0/(1.0 + 0.25*delta))
     return boosts
 
-
 # -----------------------
-# Pinecone
-# -----------------------
-from pinecone import Pinecone
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or ""
-if not PINECONE_API_KEY:
-    raise RuntimeError("PINECONE_API_KEY가 비어 있습니다.")
-if not INDEX_NAME:
-    raise RuntimeError("PINECONE_INDEX_NAME(.env)이 비어 있습니다.")
-
-pc = Pinecone(api_key=PINECONE_API_KEY)
-
-index = pc.Index(INDEX_NAME)
-# Determine actual Pinecone index dimension
-INDEX_DIM = read_index_dim(index, int(os.getenv('INDEX_DIM', os.getenv('TARGET_INDEX_DIM', '1024'))))
-# -----------------------
-# (선택) 재랭커
-# -----------------------
-USE_RERANKER = os.getenv("USE_RERANKER", "0") == "1"
-reranker = None
-if USE_RERANKER:
-    try:
-        from sentence_transformers import CrossEncoder
-        RERANKER_MODEL = os.getenv("RERANKER_MODEL", "jinaai/jina-reranker-v2-base-multilingual")
-        reranker = CrossEncoder(RERANKER_MODEL)
-    except Exception as e:
-        print(f"[WARN] Reranker load failed: {e}")
-        reranker = None
-
-# -----------------------
-# 텍스트 정리(가볍게)
+# 기본 정리
 # -----------------------
 def _normalize(s: str) -> str:
     s = unicodedata.normalize("NFC", s or "")
@@ -217,9 +121,39 @@ def _is_noise(text: str) -> bool:
     return False
 
 # -----------------------
+# Pinecone
+# -----------------------
+from pinecone import Pinecone
+
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or ""
+if not PINECONE_API_KEY:
+    raise RuntimeError("PINECONE_API_KEY가 비어 있습니다.")
+if not INDEX_NAME:
+    raise RuntimeError("PINECONE_INDEX_NAME(.env)이 비어 있습니다.")
+
+pc = Pinecone(api_key=PINECONE_API_KEY)
+index = pc.Index(INDEX_NAME)
+
+# 실제 인덱스 차원 확인(기본값은 INDEX_DIM/ TARGET_INDEX_DIM 환경변수)
+INDEX_DIM = read_index_dim(index, int(os.getenv('INDEX_DIM', os.getenv('TARGET_INDEX_DIM', '1024'))))
+
+# -----------------------
+# (선택) 재랭커
+# -----------------------
+USE_RERANKER = os.getenv("USE_RERANKER", "0") == "1"
+reranker = None
+if USE_RERANKER:
+    try:
+        from sentence_transformers import CrossEncoder  # 재랭커만 필요할 때
+        RERANKER_MODEL = os.getenv("RERANKER_MODEL", "jinaai/jina-reranker-v2-base-multilingual")
+        reranker = CrossEncoder(RERANKER_MODEL)
+    except Exception as e:
+        print(f"[WARN] Reranker load failed: {e}")
+        reranker = None
+
+# -----------------------
 # 검색
 # -----------------------
-
 def retrieve(query: str,
              top_k: int = 5,
              candidate_k: int = 20,
@@ -228,19 +162,24 @@ def retrieve(query: str,
              min_score: float = 0.0) -> List[Dict[str, Any]]:
     """
     순수 RAG용 조회. 결과는 정리된 텍스트와 메타데이터 포함.
+    - 임베딩은 원격(Hugging Face Inference API)으로만 계산 → 컨테이너 메모리 1GB에서도 안정
+    - e5 계열 인덱스와 호환되도록 query prefix 자동 적용
     """
-    # 1) 쿼리 임베딩(프리픽스 적용) + 1024차원 어댑트
-    q_text = _normalize(query)
-    _embedder = get_query_embedder()                     # hf-remote(권장) 또는 small-adapter
-    q_vec_np = _embedder.embed([q_text])[0]              # numpy.ndarray(1024,)
-    q_emb = q_vec_np.astype("float32").tolist()          # Pinecone에 넣을 list[float]
+    # 1) 쿼리 정규화 + e5 query prefix
+    norm = _normalize(query)
+    q_text = f"query: {norm}" if _is_e5(EMBED_MODEL) else norm
 
-    # 2) 필터 구성
+    # 2) 쿼리 임베딩(원격)
+    _embedder = get_query_embedder()                # hf-remote(권장) 또는 설정에 따른 provider
+    q_vec_np = _embedder.embed([q_text])[0]         # numpy.ndarray([INDEX_DIM], float32)
+    q_emb = q_vec_np.astype("float32").tolist()     # Pinecone에 넣을 list[float]
+
+    # 3) 필터 구성
     pine_filter: Dict[str, Any] = dict(filters or {})
     if company:
         pine_filter["company"] = company
 
-    # 3) Pinecone 질의
+    # 4) Pinecone 질의
     res = index.query(
         vector=q_emb,
         top_k=max(candidate_k, top_k),
@@ -249,7 +188,7 @@ def retrieve(query: str,
         namespace=NAMESPACE
     )
 
-    # 4) 후처리 / 노이즈 컷
+    # 5) 후처리 / 노이즈 컷
     prelim: List[Dict[str, Any]] = []
     for m in res.get("matches", []) or []:
         meta = m.get("metadata", {}) or {}
@@ -270,6 +209,8 @@ def retrieve(query: str,
 
     final = sorted(prelim, key=lambda x: x["score"], reverse=True)[:top_k]
     return final
+
+
 def retrieve_insurance_clauses(query: str,
                                top_k: int = 5,
                                company: Optional[str] = None,
