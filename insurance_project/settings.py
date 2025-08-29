@@ -13,12 +13,22 @@ CSRF_TRUSTED_ORIGINS = os.getenv(
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "db.sqlite3"))
+
+DATABASES = {
+    "default": dj_database_url.config(
+        default=os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'db.sqlite3'}"),
+        conn_max_age=600,
+        ssl_require=False,   # DB가 TLS 강제면 True
+    )
+}
+
 # 0826-5 안의 앱들을 파이썬 import 경로에 추가 (아카이브 폴더 인식용)
 sys.path.append(str(BASE_DIR / "0826-5"))
 
 # ───────────────── 보안/디버그 ─────────────────
 SECRET_KEY = os.getenv("SECRET_KEY")
-DEBUG = True
+# DEBUG = True
 
 # ───────────────── 앱 구성 ─────────────────
 INSTALLED_APPS = [
