@@ -25,6 +25,18 @@ CSRF_TRUSTED_ORIGINS = os.getenv(
     "https://*.cloudtype.app,http://localhost,http://127.0.0.1"
 ).split(",")
 
+# 500 원인 추적을 위해 콘솔로 스택 출력 (응답형태는 그대로 유지)
+DEBUG_PROPAGATE_EXCEPTIONS = True
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "loggers": {
+        "django.request": {"handlers": ["console"], "level": "ERROR"},
+        "django": {"handlers": ["console"], "level": "ERROR"},
+    },
+}
+
 # ───────────────── 앱 구성 ─────────────────
 INSTALLED_APPS = [
     "django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes",
@@ -43,20 +55,19 @@ if (BASE_DIR / "insurance_portal").exists() or (BASE_DIR / "0826-5" / "insurance
 AUTH_USER_MODEL = "insurance_app.CustomUser"
 
 # ───────────────── 미들웨어 ─────────────────
+# >>> 라우팅에 영향 주는 신규 폴백/가로채기 미들웨어는 넣지 않습니다. <<<
 MIDDLEWARE = [
-    "insurance_project.middleware.ExceptionLoggingMiddleware",  # ← 맨 위: 모든 예외 로그
-
     "django.middleware.security.SecurityMiddleware",
-    "insurance_project.middleware.PortalStaticBridgeMiddleware",  # ← 정적 브릿지(요청 초반에 개입)
+    # 정적 브릿지: /static/insurance_portal/** 를 원본에서 직접 서빙
+    "insurance_project.middleware.PortalStaticBridgeMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-
-    "insurance_project.middleware.TemplateFallbackMiddleware",   # ← 템플릿 없을 때만 최소 페이지
-    "insurance_project.middleware.PortalAutoInjectMiddleware",   # ← HTML 성공 응답에만 CSS/JS 주입
+    # 성공한 HTML에만 원본 토글 CSS/JS 주입 (200 응답에만 동작)
+    "insurance_project.middleware.PortalAutoInjectMiddleware",
 ]
 
 ROOT_URLCONF = "insurance_project.urls"
@@ -67,10 +78,12 @@ TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
         "DIRS": [
+            # ✅ 기존 템플릿 우선 탐색 경로
             BASE_DIR / "templates",
             BASE_DIR / "insurance_app" / "templates",
-            BASE_DIR / "0826-5" / "insurance_portal" / "templates",  # 아카이브 템플릿
-            BASE_DIR / "insurance_portal" / "templates",              # 루트에 풀린 템플릿
+            # ✅ 아카이브/루트 포털 템플릿(있을 때만)
+            BASE_DIR / "0826-5" / "insurance_portal" / "templates",
+            BASE_DIR / "insurance_portal" / "templates",
         ],
         "APP_DIRS": True,
         "OPTIONS": {
@@ -84,7 +97,6 @@ TEMPLATES = [
 ]
 
 # ───────────────── 데이터베이스 ─────────────────
-# Cloudtype 등에서 영속 DB가 필요하면 DATABASE_URL로 전환 권장.
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "db.sqlite3"))
 DATABASES = {
     "default": {"ENGINE": "django.db.backends.sqlite3", "NAME": DB_PATH}
@@ -105,37 +117,27 @@ USE_TZ = True
 # ───────────────── 정적/미디어 ─────────────────
 STATIC_URL = "/static/"
 
-# 정적 자원 실제 위치 후보
-_root_static = BASE_DIR / "insurance_portal" / "static"              # 루트에 풀렸을 때
-_arch_static = BASE_DIR / "0826-5" / "insurance_portal" / "static"   # 아카이브 폴더 내
-_root_nested = _root_static / "insurance_portal"   # 중첩 폴더 가정
-_arch_nested = _arch_static / "insurance_portal"   # 중첩 폴더 가정
+# 정적 자원 후보(실제 존재할 때만 추가)
+_root_static = BASE_DIR / "insurance_portal" / "static" / "insurance_portal"      # 루트에 풀렸을 때
+_arch_static = BASE_DIR / "0826-5" / "insurance_portal" / "static" / "insurance_portal"  # 아카이브 폴더 내
+_app_static  = BASE_DIR / "insurance_app" / "static" / "insurance_portal"
 
 STATICFILES_DIRS = []
 
-# 1) 일반 폴더 자체를 추가 (템플릿이 'css/...'로 부를 때 대비)
+# 1) 일반 정적 폴더들
 for p in [
     BASE_DIR / "insurance_app" / "static",
     BASE_DIR / "accident_project" / "static",
-    _root_static,
-    _arch_static,
-    _root_nested,
-    _arch_nested,
+    BASE_DIR / "insurance_portal" / "static",
+    BASE_DIR / "0826-5" / "insurance_portal" / "static",
 ]:
     if p.exists():
         STATICFILES_DIRS.append(p)
 
-# 2) 'insurance_portal/...' 프리픽스 매핑
-#    중첩 폴더가 있으면 그쪽을 우선 매핑하고, 없으면 상위 static을 매핑
-if _root_nested.exists():
-    STATICFILES_DIRS.append(("insurance_portal", _root_nested))
-elif _root_static.exists():
-    STATICFILES_DIRS.append(("insurance_portal", _root_static))
-
-if _arch_nested.exists():
-    STATICFILES_DIRS.append(("insurance_portal", _arch_nested))
-elif _arch_static.exists():
-    STATICFILES_DIRS.append(("insurance_portal", _arch_static))
+# 2) 템플릿에서 'insurance_portal/...' 프리픽스로 요청하는 경우용 prefix 매핑
+for p in [_root_static, _arch_static, _app_static]:
+    if p.exists():
+        STATICFILES_DIRS.append(("insurance_portal", p))
 
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
