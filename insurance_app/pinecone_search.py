@@ -1,4 +1,5 @@
 import os
+from insurance_app.services.space_adapter import embed_query_to_e5space
 import re
 import unicodedata
 import difflib
@@ -10,11 +11,14 @@ from typing import List, Dict, Optional, Any
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv(), override=True)
 
+from .utils.vec_compat import add_query_prefix, adapt_vector, read_index_dim
+
+
 USE_BACKEND = (os.getenv("EMBED_BACKEND", "st") or "st").lower()   # "st" | "openai"
-EMBED_MODEL = os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-large")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 INDEX_NAME  = os.getenv("PINECONE_INDEX_NAME", "")
 NAMESPACE   = os.getenv("NAMESPACE") or None
-INDEX_DIM   = int(os.getenv("INDEX_DIM", "1024"))  # Pinecone 인덱스 차원 (검증용)
+INDEX_DIM = None  # will be set after index init  # Pinecone 인덱스 차원 (검증용)
 # 검색 점수 가중치(노트북 개념 반영)
 W_SEMANTIC = float(os.getenv("W_SEMANTIC", "0.7"))   # 벡터 유사도 가중
 W_LEXICAL  = float(os.getenv("W_LEXICAL",  "0.3"))   # BM25/토큰겹침 가중
@@ -155,8 +159,10 @@ if not INDEX_NAME:
     raise RuntimeError("PINECONE_INDEX_NAME(.env)이 비어 있습니다.")
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(INDEX_NAME)
 
+index = pc.Index(INDEX_NAME)
+# Determine actual Pinecone index dimension
+INDEX_DIM = read_index_dim(index, int(os.getenv('INDEX_DIM', os.getenv('TARGET_INDEX_DIM', '1024'))))
 # -----------------------
 # (선택) 재랭커
 # -----------------------
@@ -212,6 +218,7 @@ def _is_noise(text: str) -> bool:
 # -----------------------
 # 검색
 # -----------------------
+
 def retrieve(query: str,
              top_k: int = 5,
              candidate_k: int = 20,
@@ -221,25 +228,29 @@ def retrieve(query: str,
     """
     순수 RAG용 조회. 결과는 정리된 텍스트와 메타데이터 포함.
     """
-    # 1) 쿼리 임베딩 + 차원 검증
-    q_text = Q_PREFIX + _normalize(query)
-    q_emb = embedder.encode_one(q_text)
-    q_dim = len(q_emb)
-    if q_dim != INDEX_DIM:
-        raise RuntimeError(
-            f"임베딩 차원({q_dim})과 인덱스 차원({INDEX_DIM})이 다릅니다. "
-            f"EMBED_MODEL='{getattr(embedder, 'model_name', 'unknown')}' ↔ INDEX_DIM={INDEX_DIM}(.env) 확인 필요"
-        )
+    # 1) 쿼리 임베딩(프리픽스 적용) + 1024차원 어댑트
+    q_text = _normalize(query)
+    if os.getenv("USE_SPACE_ADAPTER", "1") == "1":
+        q_vec = embed_query_to_e5space(q_text)   # 1024d(e5 공간)
+    else:
+        # (대안) 외부 e5-large 엔드포인트 사용 시, 필요하면 아래처럼:
+        # from insurance_app.services.embedding_client import embed_query_1024
+        # q_vec = embed_query_1024(q_text)
+        raise RuntimeError("USE_SPACE_ADAPTER=0인 경우 질의 임베딩 경로를 설정하세요.")
+    q_emb_small = embedder.encode_one(q_text)
+    q_emb = adapt_vector(q_emb_small, INDEX_DIM)
 
-    # 2) 필터
-    pine_filter = {"company": company} if company else None
+    # 2) 필터 구성
+    pine_filter: Dict[str, Any] = dict(filters or {})
+    if company:
+        pine_filter["company"] = company
 
     # 3) Pinecone 질의
     res = index.query(
         vector=q_emb,
         top_k=max(candidate_k, top_k),
         include_metadata=True,
-        filter=pine_filter,
+        filter=pine_filter if pine_filter else None,
         namespace=NAMESPACE
     )
 
@@ -250,39 +261,20 @@ def retrieve(query: str,
         raw = meta.get("text") or meta.get("chunk") or ""
         if _is_noise(raw):
             continue
-
-        cleaned = _display_clean(raw)
         prelim.append({
-            "score": float(m.get("score", 0.0)),
-            "text": cleaned,
+            "score": m.get("score", 0.0),
+            "text": raw,
             "company": meta.get("company", ""),
             "file": meta.get("file", ""),
             "page": meta.get("page", ""),
             "chunk_idx": meta.get("chunk_idx", ""),
-            "id": m.get("id")
         })
 
     if min_score > 0:
-        prelim = [r for r in prelim if r["score"] >= min_score]
+        prelim = [x for x in prelim if x["score"] >= min_score]
 
-    if not prelim:
-        return []
-
-    # 5) (선택) 재랭크
-    final = prelim
-    if reranker and len(prelim) > top_k:
-        try:
-            ce_scores = reranker.predict([(query, r["text"]) for r in prelim]).tolist()
-        except Exception:
-            ce_scores = [0.0] * len(prelim)
-        for r, s in zip(prelim, ce_scores):
-            r["rerank_score"] = float(s) + float(r["score"])
-        final = sorted(prelim, key=lambda x: x.get("rerank_score", x["score"]), reverse=True)[:top_k]
-    else:
-        final = sorted(prelim, key=lambda x: x["score"], reverse=True)[:top_k]
-
+    final = sorted(prelim, key=lambda x: x["score"], reverse=True)[:top_k]
     return final
-
 def retrieve_insurance_clauses(query: str,
                                top_k: int = 5,
                                company: Optional[str] = None,

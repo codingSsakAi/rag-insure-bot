@@ -1,0 +1,33 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- Web / API ---
+Django==5.2.4
+djangorestframework==3.16.0
+python-dotenv==1.1.1
+# 배포 환경 휴대성 위해: 시스템 libpq 의존 피하려면 -binary 권장
+psycopg2-binary==2.9.10
+requests==2.32.4
+
+# --- VectorDB / LLM SDK ---
+pinecone==7.3.0
+openai==1.99.9
+
+# --- Embedding runtime (small model + space adapter only) ---
+numpy==2.2.6
+# CPU 전용 PyTorch (wheel은 위 extra-index에서 받음)
+torch==2.8.0+cpu
+sentence-transformers==5.0.0
+transformers==4.55.0
+tokenizers==0.21.4
+huggingface-hub==0.34.3
+safetensors==0.5.3
+tqdm==4.67.1
+
+# --- Timezone / util ---
+python-dateutil==2.9.0.post0
+pytz==2025.2
+tzdata==2025.2
+typing_extensions==4.14.1
+
+# --- (optional) prod server on Linux container ---
+# gunicorn==21.2.0

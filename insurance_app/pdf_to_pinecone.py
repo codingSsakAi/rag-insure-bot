@@ -1,3 +1,8 @@
+try:
+    from .utils.vec_compat import add_doc_prefix, adapt_vectors, read_index_dim
+except Exception:
+    from insurance_app.utils.vec_compat import add_doc_prefix, adapt_vectors, read_index_dim
+
 import os
 import re
 import unicodedata
@@ -14,7 +19,7 @@ from tqdm import tqdm
 # 임베더 어댑터
 # -----------------------
 USE_BACKEND = os.getenv("EMBED_BACKEND", "st").lower()
-EMBED_MODEL = os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-large")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
 class Embedder:
     def __init__(self, backend: str, model_name: str):
@@ -51,6 +56,7 @@ Q_PREFIX   = "query: "   if (USE_BACKEND == "st" and is_e5(EMBED_MODEL)) else ""
 
 embedder = Embedder(USE_BACKEND, EMBED_MODEL)
 EMBED_DIM = embedder.get_dimension()
+TARGET_INDEX_DIM = int(os.getenv("TARGET_INDEX_DIM", "1024"))
 
 # -----------------------
 # Pinecone
@@ -170,7 +176,7 @@ def upsert(vectors):
         ids = [x[0] for x in batch]
         embed_texts = [x[1] for x in batch]
         metas = [x[2] for x in batch]
-        embs = embedder.encode(embed_texts)
+        embs = adapt_vectors(embedder.encode(add_doc_prefix(embed_texts, os.getenv("EMBED_MODEL", ""))), TARGET_INDEX_DIM)
         index.upsert(
             vectors=[{"id": _id, "values": e, "metadata": m} for _id, e, m in zip(ids, embs, metas)],
             namespace=NAMESPACE
