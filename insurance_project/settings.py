@@ -100,8 +100,10 @@ USE_TZ = True
 STATIC_URL = "/static/"
 
 # 정적 자원 실제 위치 후보
-_root_static = BASE_DIR / "insurance_portal" / "static"           # 루트에 풀렸을 때
-_arch_static = BASE_DIR / "0826-5" / "insurance_portal" / "static" # 아카이브 폴더 내
+_root_static = BASE_DIR / "insurance_portal" / "static"              # 루트에 풀렸을 때
+_arch_static = BASE_DIR / "0826-5" / "insurance_portal" / "static"   # 아카이브 폴더 내
+_root_nested = _root_static / "insurance_portal"   # 중첩 폴더 가정
+_arch_nested = _arch_static / "insurance_portal"   # 중첩 폴더 가정
 
 STATICFILES_DIRS = []
 
@@ -111,14 +113,22 @@ for p in [
     BASE_DIR / "accident_project" / "static",
     _root_static,
     _arch_static,
+    _root_nested,
+    _arch_nested,
 ]:
     if p.exists():
         STATICFILES_DIRS.append(p)
 
-# 2) 템플릿이 'insurance_portal/...' 프리픽스로 요청하는 경우를 위한 매핑(prefix, path)
-if _root_static.exists():
+# 2) 'insurance_portal/...' 프리픽스 매핑
+#    중첩 폴더가 있으면 그쪽을 우선 매핑하고, 없으면 상위 static을 매핑
+if _root_nested.exists():
+    STATICFILES_DIRS.append(("insurance_portal", _root_nested))
+elif _root_static.exists():
     STATICFILES_DIRS.append(("insurance_portal", _root_static))
-if _arch_static.exists():
+
+if _arch_nested.exists():
+    STATICFILES_DIRS.append(("insurance_portal", _arch_nested))
+elif _arch_static.exists():
     STATICFILES_DIRS.append(("insurance_portal", _arch_static))
 
 STATIC_ROOT = BASE_DIR / "staticfiles"
