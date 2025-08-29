@@ -1,3 +1,4 @@
+from pathlib import Path
 from django.contrib import admin
 from django.urls import include, path, re_path
 from django.conf import settings
@@ -28,31 +29,11 @@ urlpatterns = [
     path("admin/", admin.site.urls),
 ]
 
-# ───────────────── insurance_portal 엔드포인트 포함 ─────────────────
-# 0826-5/insurance_portal 앱이 INSTALLED_APPS에 있는 경우, 포털 API/페이지를 루트로 추가
-try:
+# 개발 서버에서만 약관 PDF 공개 서빙
+# 실제 파일: <BASE_DIR>/insurance_app/documents/<회사명>/<회사명>.pdf
+if getattr(settings, 'DEBUG', False):
+    documents_root = (Path(settings.BASE_DIR) / 'insurance_app' / 'documents').resolve()
     urlpatterns += [
-        path("", include(("insurance_portal.urls", "insurance_portal"), namespace="insurance_portal")),
+        re_path(r'^documents/(?P<path>.*)$',
+                static_serve, {'document_root': str(documents_root)}),
     ]
-except Exception:
-    # 포털 앱이 없는 배포에서도 동작하도록 무시
-    pass
-
-# ───────────────── 정적/미디어 ─────────────────
-# 일반 정적/미디어
-urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
-
-# 개발 편의를 위한 포털 전용 정적 경로(아카이브/루트 모두 지원)
-_portal_static_roots = [
-    settings.BASE_DIR / "insurance_portal" / "static" / "insurance_portal",
-    settings.BASE_DIR / "0826-5" / "insurance_portal" / "static" / "insurance_portal",
-]
-if settings.DEBUG:
-    for root in _portal_static_roots:
-        if root.exists():
-            urlpatterns += [
-                re_path(r"^static/insurance_portal/(?P<path>.*)$",
-                        static_serve,
-                        {"document_root": root}),
-            ]
