@@ -44,13 +44,19 @@ AUTH_USER_MODEL = "insurance_app.CustomUser"
 
 # ───────────────── 미들웨어 ─────────────────
 MIDDLEWARE = [
+    "insurance_project.middleware.ExceptionLoggingMiddleware",  # ← 맨 위: 모든 예외 로그
+
     "django.middleware.security.SecurityMiddleware",
+    "insurance_project.middleware.PortalStaticBridgeMiddleware",  # ← 정적 브릿지(요청 초반에 개입)
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+
+    "insurance_project.middleware.TemplateFallbackMiddleware",   # ← 템플릿 없을 때만 최소 페이지
+    "insurance_project.middleware.PortalAutoInjectMiddleware",   # ← HTML 성공 응답에만 CSS/JS 주입
 ]
 
 ROOT_URLCONF = "insurance_project.urls"
