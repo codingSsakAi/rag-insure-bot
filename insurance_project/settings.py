@@ -2,34 +2,28 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 import sys
-import dj_database_url
+
+# ───────────────── 기본 설정 ─────────────────
 load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# 0826-5 안의 앱/템플릿을 import 가능하도록 경로 추가
+sys.path.append(str(BASE_DIR / "0826-5"))
+
+# ───────────────── 보안/디버그(환경변수로 제어) ─────────────────
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
 DEBUG = os.getenv("DEBUG", "0") == "1"
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", ".cloudtype.app,localhost,127.0.0.1").split(",")
+
+ALLOWED_HOSTS = os.getenv(
+    "ALLOWED_HOSTS",
+    ".cloudtype.app,localhost,127.0.0.1"
+).split(",")
+
 CSRF_TRUSTED_ORIGINS = os.getenv(
     "CSRF_TRUSTED_ORIGINS",
     "https://*.cloudtype.app,http://localhost,http://127.0.0.1"
 ).split(",")
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "db.sqlite3"))
-
-DATABASES = {
-    "default": dj_database_url.config(
-        default=os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'db.sqlite3'}"),
-        conn_max_age=600,
-        ssl_require=False,   # DB가 TLS 강제면 True
-    )
-}
-
-# 0826-5 안의 앱들을 파이썬 import 경로에 추가 (아카이브 폴더 인식용)
-sys.path.append(str(BASE_DIR / "0826-5"))
-
-# ───────────────── 보안/디버그 ─────────────────
-SECRET_KEY = os.getenv("SECRET_KEY")
-# DEBUG = True
 
 # ───────────────── 앱 구성 ─────────────────
 INSTALLED_APPS = [
@@ -47,12 +41,6 @@ if (BASE_DIR / "insurance_portal").exists() or (BASE_DIR / "0826-5" / "insurance
     INSTALLED_APPS.append("insurance_portal")
 
 AUTH_USER_MODEL = "insurance_app.CustomUser"
-
-# ───────────────── 환경 변수 ─────────────────
-load_dotenv()
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_ENV = os.getenv("PINECONE_ENV")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # ───────────────── 미들웨어 ─────────────────
 MIDDLEWARE = [
@@ -75,12 +63,10 @@ TEMPLATES = [
         "DIRS": [
             BASE_DIR / "templates",
             BASE_DIR / "insurance_app" / "templates",
-            # ✅ 아카이브 템플릿 경로(이 폴더에 partial들이 들어있음)
-            BASE_DIR / "0826-5" / "insurance_portal" / "templates",
-            # 루트에 풀어뒀다면 이것도 커버
-            BASE_DIR / "insurance_portal" / "templates",
+            BASE_DIR / "0826-5" / "insurance_portal" / "templates",  # 아카이브 템플릿
+            BASE_DIR / "insurance_portal" / "templates",              # 루트에 풀린 템플릿
         ],
-        "APP_DIRS": True,  # 각 앱의 templates 자동 탐색
+        "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
                 "django.template.context_processors.request",
@@ -92,8 +78,10 @@ TEMPLATES = [
 ]
 
 # ───────────────── 데이터베이스 ─────────────────
+# Cloudtype 등에서 영속 DB가 필요하면 DATABASE_URL로 전환 권장.
+DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "db.sqlite3"))
 DATABASES = {
-    "default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}
+    "default": {"ENGINE": "django.db.backends.sqlite3", "NAME": DB_PATH}
 }
 
 # ───────────────── 인증/국제화 ─────────────────
@@ -111,26 +99,39 @@ USE_TZ = True
 # ───────────────── 정적/미디어 ─────────────────
 STATIC_URL = "/static/"
 
-# 존재하는 폴더만 추가(아카이브 정적파일 경로 포함)
-_static_candidates = [
+# 정적 자원 실제 위치 후보
+_root_static = BASE_DIR / "insurance_portal" / "static"           # 루트에 풀렸을 때
+_arch_static = BASE_DIR / "0826-5" / "insurance_portal" / "static" # 아카이브 폴더 내
+
+STATICFILES_DIRS = []
+
+# 1) 일반 폴더 자체를 추가 (템플릿이 'css/...'로 부를 때 대비)
+for p in [
     BASE_DIR / "insurance_app" / "static",
     BASE_DIR / "accident_project" / "static",
-    BASE_DIR / "insurance_portal" / "static",                    # 루트에 둘 때
-    BASE_DIR / "0826-5" / "insurance_portal" / "static",         # ✅ 아카이브 폴더에 둘 때
-]
-STATICFILES_DIRS = [p for p in _static_candidates if p.exists()]
+    _root_static,
+    _arch_static,
+]:
+    if p.exists():
+        STATICFILES_DIRS.append(p)
+
+# 2) 템플릿이 'insurance_portal/...' 프리픽스로 요청하는 경우를 위한 매핑(prefix, path)
+if _root_static.exists():
+    STATICFILES_DIRS.append(("insurance_portal", _root_static))
+if _arch_static.exists():
+    STATICFILES_DIRS.append(("insurance_portal", _arch_static))
+
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-
 # ───────────────── 기타 ─────────────────
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_MOCK_API = True
 LOGIN_URL = "/login/"
 X_FRAME_OPTIONS = "SAMEORIGIN"
 
+# 약관 PDF 문서 경로 (예: insurance_app/documents/회사/회사.pdf)
 DOCUMENTS_URL = "/documents/"
-# 수정 (실제 파일이 insurance_app/documents에 있다면)
 DOCUMENTS_ROOT = BASE_DIR / "insurance_app" / "documents"
