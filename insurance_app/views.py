@@ -8,14 +8,17 @@ import hashlib
 import difflib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime  # <-- 추가
 
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import (
+    HttpRequest, HttpResponse, JsonResponse,
+    FileResponse, Http404,
+)
 from django.shortcuts import render, redirect
 from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.views.decorators.http import require_POST
 from django.template import TemplateDoesNotExist
+from django.urls import reverse
 
 # 인증/계정
 from django.contrib import messages
@@ -98,8 +101,9 @@ def call_llm_via_project_client(prompt: str) -> str:
 # ────────────────────────────────────────────────────────────────────────────────
 # 문서 경로 추정 유틸: 회사/파일.pdf 상대경로 생성
 # ────────────────────────────────────────────────────────────────────────────────
-# ✅ insurance_app/documents 경로로 수정
+# ✅ insurance_app/documents 경로
 DOCS_DIR = Path(__file__).resolve().parent / "documents"
+DATA_DIR = Path(__file__).resolve().parent / "data"
 
 def _norm_key_ko(s: str) -> str:
     t = unicodedata.normalize("NFKC", s or "")
@@ -107,7 +111,7 @@ def _norm_key_ko(s: str) -> str:
 
 def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
     """
-    DOCS_DIR = insurance_app/documents 기준으로 작동합니다.
+    DOCS_DIR(insurance_app/documents) 기준: 회사명/파일 힌트로 PDF 상대경로 추측
     """
     try:
         if not DOCS_DIR.exists():
@@ -115,31 +119,40 @@ def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
     except Exception:
         return None
 
+    # 1) file_hint가 .pdf면 우선 확인
     if file_hint:
         hint = (file_hint or "").strip()
         if hint.lower().endswith(".pdf"):
+            # 직접 파일 경로
             p = (DOCS_DIR / hint)
             if p.exists():
                 return str(p.relative_to(DOCS_DIR)).replace("\\", "/")
+            # 회사 폴더 안에서 찾기
             for d in DOCS_DIR.iterdir():
                 if d.is_dir():
                     cand = d / hint
                     if cand.exists():
                         return f"{d.name}/{hint}"
 
+    # 2) 회사 폴더명 일치 (정확한 매칭)
     key = _norm_key_ko(company)
     if key:
         for d in DOCS_DIR.iterdir():
             if d.is_dir() and _norm_key_ko(d.name) == key:
+                # 해당 폴더에서 PDF 파일 찾기
                 pdfs = list(d.glob("*.pdf"))
                 if pdfs:
+                    # 회사명과 같은 이름의 PDF를 우선적으로 찾기
                     for pdf in pdfs:
                         if _norm_key_ko(pdf.stem) == key:
                             return f"{d.name}/{pdf.name}"
+                    # 없으면 첫 번째 PDF
                     return f"{d.name}/{pdfs[0].name}"
 
+    # 3) 느슨한 탐색 (부분 매칭)
     loose = _norm_key_ko(company or file_hint)
     if loose:
+        # 폴더명에서 부분 매칭
         for d in DOCS_DIR.iterdir():
             if d.is_dir() and loose in _norm_key_ko(d.name):
                 pdfs = list(d.glob("*.pdf"))
@@ -148,6 +161,7 @@ def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
                         if loose in _norm_key_ko(pdf.stem):
                             return f"{d.name}/{pdf.name}"
                     return f"{d.name}/{pdfs[0].name}"
+        # 파일명에서 직접 검색
         for f in DOCS_DIR.rglob("*.pdf"):
             stem = _norm_key_ko(f.stem)
             if loose in stem:
@@ -156,6 +170,34 @@ def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
                 except Exception:
                     pass
     return None
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Glossary JSON 로딩 유틸 (DB 비어있을 때도 페이지/API가 작동하도록)
+# ────────────────────────────────────────────────────────────────────────────────
+def _iter_glossary_json_files() -> List[Path]:
+    files: List[Path] = []
+    try:
+        if DATA_DIR.exists():
+            files.extend(sorted(DATA_DIR.glob("*.json")))
+    except Exception:
+        pass
+    return files
+
+def _load_glossary_json() -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for p in _iter_glossary_json_files():
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            out.append(item)
+                elif isinstance(data, dict) and "results" in data and isinstance(data["results"], list):
+                    out.extend([x for x in data["results"] if isinstance(x, dict)])
+        except Exception:
+            continue
+    return out
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 검색 결과 정제/요약(노이즈 차단 강화)
@@ -177,8 +219,10 @@ def dedup_matches_by_tuple(matches: List[Dict[str, Any]]) -> List[Dict[str, Any]
     seen, out = set(), []
     for r in matches:
         k = _make_tuple_key(r)
-        if k in seen: continue
-        seen.add(k); out.append(r)
+        if k in seen: 
+            continue
+        seen.add(k)
+        out.append(r)
     return out
 
 def fuzzy_dedup_matches(matches: List[Dict[str, Any]], threshold: float = 0.965, window: int = 80) -> List[Dict[str, Any]]:
@@ -202,6 +246,7 @@ _DISC_KEYS  = ["무사고", "할인", "할인율", "마일리지", "주행거리
 _FAM_KEYS   = ["가족", "가족운전자", "운전자범위", "한정", "부부", "자녀", "배우자", "형제자매"]
 _THEFT_KEYS = ["도난", "절도", "강도", "절취", "도난손해", "차량도난", "무단사용", "침입", "손괴", "파손", "분실"]
 
+# "약관형" 판별용 광의 키워드
 _POLICY_HINTS = set(_DUI_KEYS + _DISC_KEYS + _FAM_KEYS + _THEFT_KEYS + [
     "약관","특별약관","보상","담보","면책","대인","대물","자차","자기신체","의무보험","보험금","청구","배상"
 ])
@@ -231,11 +276,12 @@ def _looks_like_table_fragment(s: str) -> bool:
     if re.fullmatch(r"[○◯●◎△▲▽▼□■◇◆✕×･·\-\–—\|]+", t): return True
     return False
 
+# 문장 분리
 def split_sentences(text: str) -> List[str]:
     if not text: return []
     t = unicodedata.normalize("NFKC", text)
-    t = re.sub(r"([\.!?])\s*", r"\1§", t)
-    t = re.sub(r"(다|요)(?=[\s\)\]\}\"\']|$)", r"\1§", t)
+    t = re.sub(r"([\.!?])\s*", r"\1§", t)                 # 영문 구두점 뒤
+    t = re.sub(r"(다|요)(?=[\s\)\]\}\"\']|$)", r"\1§", t)  # 한국어 어말어미 뒤
     parts = [seg.strip() for seg in t.split("§") if seg and seg.strip()]
     return parts
 
@@ -390,7 +436,7 @@ def build_answer(question: str, matches: List[Dict[str, Any]], max_refs: int = 5
     return {"answer": answer_text, "references": refs, "results": slim_results}
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 자연어 결론(도난/음주/무사고/가족 전용) + 정리
+# 자연어 결론
 # ────────────────────────────────────────────────────────────────────────────────
 def _sanitize_korean_text(text: str) -> str:
     if not text: return ""
@@ -496,6 +542,30 @@ def detect_intent_for_router(q: str, force: Optional[str] = None) -> str:
     return "general"
 
 # ────────────────────────────────────────────────────────────────────────────────
+# PDF 안전 서빙(앱 내부 documents/**)
+# ────────────────────────────────────────────────────────────────────────────────
+def _safe_join_docs(relpath: str) -> Path:
+    clean = (relpath or "").replace("\\", "/")
+    clean = re.sub(r"^\/*", "", clean)
+    target = (DOCS_DIR / clean).resolve()
+    if not str(target).startswith(str(DOCS_DIR.resolve())):
+        raise Http404("Invalid path")
+    return target
+
+def serve_policy_pdf(request: HttpRequest, relpath: str):
+    """
+    앱 내부 insurance_app/documents/** 에 있는 PDF를 안전하게 서빙.
+    URL 예: /docs/삼성화재/자가용_약관.pdf#page=123
+    """
+    fp = _safe_join_docs(relpath)
+    if not fp.exists() or fp.suffix.lower() != ".pdf":
+        raise Http404("Not found")
+    try:
+        return FileResponse(open(fp, "rb"), content_type="application/pdf")
+    except Exception:
+        raise Http404("Not found")
+
+# ────────────────────────────────────────────────────────────────────────────────
 # 페이지: 홈/인증/마이페이지
 # ────────────────────────────────────────────────────────────────────────────────
 def home(request: HttpRequest) -> HttpResponse:
@@ -516,7 +586,7 @@ def signup(request: HttpRequest) -> HttpResponse:
         if form.is_valid():
             user = form.save()
             messages.success(request, f'{user.username}님의 계정이 생성되었습니다.')
-            return redirect('login')
+            return redirect('signup')  # 가입 후 로그인/홈 등 원하는 경로로 조정
     else:
         form = CustomUserCreationForm()
     return render(request, 'insurance_app/signup.html', {'form': form})
@@ -616,9 +686,19 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
     if not query:
         return JsonResponse({'success': False, 'error': '질문을 입력해주세요.'}, status=400)
 
-    # 1) 라우팅 결정
+    # 1) 라우팅 결정 (강제옵션: force_mode=policy|general)
     force_mode = (data.get("force_mode") or "").strip().lower() or None
     intent = detect_intent_for_router(query, force=force_mode)
+
+    def _make_pdf_url(relpath: Optional[str], page: Optional[int], request: HttpRequest) -> Optional[str]:
+        if not relpath:
+            return None
+        base = request.build_absolute_uri(
+            reverse('insurance_app:serve_policy_pdf', kwargs={'relpath': relpath})
+        )
+        if page:
+            return f"{base}#page={int(page)}"
+        return base
 
     # 2) 약관형 → RAG
     if intent == "policy" or answer_mode == "clauses":
@@ -643,23 +723,39 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
             answer_mode=answer_mode
         )
 
+        # 링크 보정: 서버에서 직접 PDF URL 생성해 제공
         refs_out: List[Dict[str, Any]] = []
         for _r in summary.get("references", []):
             _company = (_r.get("company") or "").strip()
             _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
-            _r2 = dict(_r)
-            _r2["company"] = _company
-            _r2["file"] = _fileval
-            refs_out.append(_r2)
+            rel = _guess_pdf_relpath(_company, _fileval) or _guess_pdf_relpath(_company, "")
+            url = _make_pdf_url(rel, _r.get("page"), request) if rel else None
+
+            item = dict(_r)
+            item["company"] = _company
+            item["file"] = _fileval
+            item["relpath"] = rel or ""
+            if url:
+                item["url"] = url
+                item["pdf_url"] = url
+            refs_out.append(item)
 
         results_out: List[Dict[str, Any]] = []
         for _r in summary.get("results", []):
             _company = (_r.get("company") or "").strip()
             _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
-            _r2 = dict(_r)
-            _r2["company"] = _company
-            _r2["file"] = _fileval
-            results_out.append(_r2)
+            rel = _guess_pdf_relpath(_company, _fileval) or _guess_pdf_relpath(_company, "")
+            page_opt = _r.get("page")
+            url = _make_pdf_url(rel, page_opt, request) if rel else None
+
+            item = dict(_r)
+            item["company"] = _company
+            item["file"] = _fileval
+            item["relpath"] = rel or ""
+            if url:
+                item["url"] = url
+                item["pdf_url"] = url
+            results_out.append(item)
 
         return JsonResponse({
             'success': True,
@@ -671,7 +767,7 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
             'media_url': settings.MEDIA_URL,
         })
 
-    # 3) 일반형 → 기존 llm_client
+    # 3) 일반형 → 아카이브 기존 llm_client로 답변
     answer = call_llm_via_project_client(query)
     return JsonResponse({
         'success': True,
@@ -684,127 +780,127 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
     })
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Glossary JSON fallback loader (NEW)
+# 용어 사전 페이지 & API (DB 비어도 JSON으로 안전 동작)
 # ────────────────────────────────────────────────────────────────────────────────
-GLOSSARY_JSON_PATH = Path(__file__).resolve().parent / "data" / "glossary.json"
-
-def _load_glossary_from_json(q: str = "", cat: str = "", limit: int = 500):
-    """
-    DB(GlossaryTerm)가 비거나 장애일 때, JSON(insurance_app/data/glossary.json)에서 직접 로드.
-    """
+def glossary(request: HttpRequest) -> HttpResponse:
+    # 1) DB 우선
     try:
-        raw = json.loads(GLOSSARY_JSON_PATH.read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
-            return []
+        terms_qs = list(GlossaryTerm.objects.all().order_by('term'))
+        terms_payload = [{
+            "slug": t.slug,
+            "term": t.term,
+            "short_def": t.short_def,
+            "long_def": t.long_def,
+            "category": t.category,
+            "aliases": t.aliases,
+            "related": t.related,
+            "meta": t.meta,
+            "updated_at": t.updated_at.isoformat() if getattr(t, "updated_at", None) else "",
+        } for t in terms_qs]
     except Exception:
-        return []
+        terms_payload = []
 
-    def _norm(s):
-        return (s or "").strip().lower()
+    # 2) 비어있으면 JSON fallback
+    if not terms_payload:
+        json_terms = _load_glossary_json()
+        # normalize keys for template
+        norm = []
+        for it in json_terms:
+            norm.append({
+                "slug": it.get("slug") or it.get("id") or "",
+                "term": it.get("term") or it.get("title") or "",
+                "short_def": it.get("short_def") or it.get("short") or it.get("desc") or "",
+                "long_def": it.get("long_def") or it.get("long") or it.get("description") or "",
+                "category": it.get("category") or it.get("cat") or "",
+                "aliases": it.get("aliases") or it.get("alias") or "",
+                "related": it.get("related") or "",
+                "meta": it.get("meta") or {},
+                "updated_at": it.get("updated_at") or "",
+            })
+        terms_payload = norm
 
-    qn = _norm(q)
-    cn = _norm(cat)
-
-    out = []
-    for it in raw:
-        term = it.get("term") or ""
-        short_def = it.get("short_def") or ""
-        long_def = it.get("long_def") or ""
-        category = it.get("category") or ""
-        aliases = it.get("aliases") or []
-        if cn and _norm(category) != cn:
-            continue
-        if qn:
-            hay = " ".join([
-                term.lower(),
-                short_def.lower(),
-                long_def.lower(),
-                " ".join((a or "").lower() for a in (aliases if isinstance(aliases, list) else [])),
-            ])
-            if qn not in hay:
-                continue
-        out.append({
-            "slug": it.get("slug") or "",
-            "term": term,
-            "short_def": short_def,
-            "long_def": long_def,
-            "category": category,
-            "aliases": aliases if isinstance(aliases, list) else [],
-            "related": it.get("related") or [],
-            "meta": it.get("meta") or {},
-            "updated_at": it.get("updated_at") or datetime.utcnow().isoformat(),
-        })
-        if len(out) >= max(1, min(500, limit)):
-            break
-    out.sort(key=lambda x: x.get("term", ""))
-    return out
-
-# ────────────────────────────────────────────────────────────────────────────────
-# 용어 사전 페이지 & API (DB 우선, JSON fallback)
-# ────────────────────────────────────────────────────────────────────────────────
-def glossary(request):
-    """
-    DB 시도 → 비어 있거나 오류면 JSON fallback(insurance_app/data/glossary.json)
-    템플릿: insurance_portal/glossary.html → 없으면 insurance_app/glossary.html → 없으면 JSON
-    """
-    terms = []
-    db_ok = False
+    # 3) 템플릿 우선순위: insurance_portal → insurance_app → 간단 렌더
+    ctx = {"terms": terms_payload or []}
     try:
-        qs = GlossaryTerm.objects.all().order_by('term')
-        if qs.exists():
-            db_ok = True
-            terms = list(qs)
-    except Exception:
-        pass
-
-    if not db_ok:
-        terms = _load_glossary_from_json(q="", cat="", limit=500)
-
-    tpl_candidates = ["insurance_portal/glossary.html", "insurance_app/glossary.html"]
-    last_err = None
-    for tpl in tpl_candidates:
+        return render(request, "insurance_portal/glossary.html", ctx)
+    except TemplateDoesNotExist:
         try:
-            return render(request, tpl, {"terms": terms or []})
-        except TemplateDoesNotExist as e:
-            last_err = e
-            continue
-    return JsonResponse({"success": True, "count": len(terms), "results": terms}, status=200)
+            return render(request, "insurance_app/glossary.html", ctx)
+        except TemplateDoesNotExist:
+            # 최소 보장 (템플릿 없어도 페이지가 죽지 않도록)
+            html = ["<h2>용어 사전</h2><ul>"]
+            for t in terms_payload[:500]:
+                html.append(f"<li><b>{t['term']}</b> — {t['short_def']}</li>")
+            html.append("</ul>")
+            return HttpResponse("\n".join(html))
 
 def glossary_api(request: HttpRequest) -> HttpResponse:
-    """
-    /api/glossary?q=...&cat=...&limit=...
-    DB 우선, 비어 있으면 JSON fallback
-    """
     q = (request.GET.get("q") or "").strip()
     cat = (request.GET.get("cat") or "").strip()
     limit = int(request.GET.get("limit") or 50)
 
+    # 1) DB 시도
+    payload: List[Dict[str, Any]] = []
     try:
-        qs = GlossaryTerm.objects.all()
+        terms = GlossaryTerm.objects.all()
         if q:
-            qs = qs.filter(
+            qs = q.lower()
+            terms = terms.filter(
                 Q(term__icontains=q) |
                 Q(short_def__icontains=q) |
                 Q(long_def__icontains=q) |
-                Q(aliases__icontains=q.lower())
+                Q(aliases__icontains=qs)
             )
         if cat:
-            qs = qs.filter(category=cat)
-        if qs.exists():
-            payload = [{
-                "slug": t.slug,
-                "term": t.term,
-                "short_def": t.short_def,
-                "long_def": t.long_def,
-                "category": t.category,
-                "aliases": t.aliases,
-                "related": t.related,
-                "meta": t.meta,
-                "updated_at": getattr(t, "updated_at", None).isoformat() if getattr(t, "updated_at", None) else "",
-            } for t in qs[:max(1, min(500, limit))]]
-            return JsonResponse({"success": True, "count": len(payload), "results": payload})
+            terms = terms.filter(category=cat)
+        payload = [{
+            "slug": t.slug,
+            "term": t.term,
+            "short_def": t.short_def,
+            "long_def": t.long_def,
+            "category": t.category,
+            "aliases": t.aliases,
+            "related": t.related,
+            "meta": t.meta,
+            "updated_at": t.updated_at.isoformat() if getattr(t, "updated_at", None) else "",
+        } for t in terms[:max(1, min(500, limit))]]
     except Exception:
-        pass
+        payload = []
 
-    payload = _load_glossary_from_json(q=q, cat=cat, limit=limit)
+    # 2) DB 비거나 에러면 JSON fallback
+    if not payload:
+        json_terms = _load_glossary_json()
+        # 검색/필터 적용
+        def _match(it: Dict[str, Any]) -> bool:
+            if not q and not cat:
+                return True
+            term_txt = " ".join([
+                str(it.get("term", "")),
+                str(it.get("short_def", "")),
+                str(it.get("long_def", "")),
+                str(it.get("aliases", "")),
+            ]).lower()
+            if q and (q.lower() not in term_txt):
+                return False
+            if cat and str(it.get("category", "")).strip() != cat:
+                return False
+            return True
+
+        norm = []
+        for it in json_terms:
+            item = {
+                "slug": it.get("slug") or it.get("id") or "",
+                "term": it.get("term") or it.get("title") or "",
+                "short_def": it.get("short_def") or it.get("short") or it.get("desc") or "",
+                "long_def": it.get("long_def") or it.get("long") or it.get("description") or "",
+                "category": it.get("category") or it.get("cat") or "",
+                "aliases": it.get("aliases") or it.get("alias") or "",
+                "related": it.get("related") or "",
+                "meta": it.get("meta") or {},
+                "updated_at": it.get("updated_at") or "",
+            }
+            if _match(item):
+                norm.append(item)
+        payload = norm[:max(1, min(500, limit))]
+
     return JsonResponse({"success": True, "count": len(payload), "results": payload})

@@ -17,4 +17,7 @@ urlpatterns = [
     path('mypage/', views.mypage, name='mypage'),
     path('glossary/', views.glossary, name='glossary'),
     path('api/glossary', views.glossary_api, name='glossary_api'),
+
+    # 약관 PDF 서빙(앱 내부 documents에서 안전하게 제공)
+    path('docs/<path:relpath>', views.serve_policy_pdf, name='serve_policy_pdf'),
 ]
