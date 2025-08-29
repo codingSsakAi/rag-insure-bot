@@ -1,6 +1,7 @@
 import os
 import re
 import unicodedata
+from functools import lru_cache
 from typing import List, Dict, Optional, Any
 
 # -----------------------
@@ -9,26 +10,23 @@ from typing import List, Dict, Optional, Any
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv(), override=True)
 
-# 원격 임베딩 프로바이더(다운로드/로컬 로딩 없음)
+# 원격 임베딩 프로바이더(로컬 모델 다운로드/로딩 없음)
 from insurance_app.services.embedding_provider import get_query_embedder
 
-# vec utils
+# 인덱스 차원 읽기 유틸(서버 기동 후, 쿼리 시점에 호출)
 from .utils.vec_compat import read_index_dim
 
 # -----------------------
 # 설정/가중치
 # -----------------------
-USE_BACKEND = (os.getenv("EMBED_BACKEND", "st") or "st").lower()   # "st" | "openai" (유지용)
-EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-large")
 INDEX_NAME  = os.getenv("PINECONE_INDEX_NAME", "")
 NAMESPACE   = os.getenv("NAMESPACE") or None
-INDEX_DIM = None  # Pinecone 인덱스 차원 (아래에서 실제값으로 설정)
 
-W_SEMANTIC = float(os.getenv("W_SEMANTIC", "0.7"))   # 벡터 유사도 가중 (현재 랭킹 내부 가중치용)
-W_LEXICAL  = float(os.getenv("W_LEXICAL",  "0.3"))   # BM25/토큰겹침 가중
-W_RECENCY  = float(os.getenv("W_RECENCY",  "0.0"))   # year 메타 있을 때만 영향
+W_SEMANTIC = float(os.getenv("W_SEMANTIC", "0.7"))   # 벡터 유사도 가중(보조값; 현재 내부 사용 X)
+W_LEXICAL  = float(os.getenv("W_LEXICAL",  "0.3"))   # BM25/토큰겹침 가중(보조값; 현재 내부 사용 X)
+W_RECENCY  = float(os.getenv("W_RECENCY",  "0.0"))   # 연도 메타 있을 때만 영향(보조값)
 
-# e5 계열 판별/프리픽스
 def _is_e5(name: str) -> bool:
     return "e5" in (name or "").lower()
 
@@ -54,10 +52,7 @@ def _bm25_scores(query: str, docs: list) -> list:
     except Exception:
         # Fallback: 단순 토큰 교집합 크기
         q = set(_tokenize_lex(query))
-        out = []
-        for d in docs:
-            out.append(float(len(q & set(_tokenize_lex(d)))))
-        return out
+        return [float(len(q & set(_tokenize_lex(d)))) for d in docs]
 
 def _zscore(xs: list) -> list:
     if not xs: return xs
@@ -121,35 +116,40 @@ def _is_noise(text: str) -> bool:
     return False
 
 # -----------------------
-# Pinecone
+# Pinecone (지연 로드)
 # -----------------------
 from pinecone import Pinecone
 
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or ""
-if not PINECONE_API_KEY:
-    raise RuntimeError("PINECONE_API_KEY가 비어 있습니다.")
-if not INDEX_NAME:
-    raise RuntimeError("PINECONE_INDEX_NAME(.env)이 비어 있습니다.")
+@lru_cache(maxsize=1)
+def _get_pinecone_index():
+    api_key = os.getenv("PINECONE_API_KEY") or ""
+    if not api_key:
+        raise RuntimeError("PINECONE_API_KEY가 비어 있습니다.")
+    if not INDEX_NAME:
+        raise RuntimeError("PINECONE_INDEX_NAME(.env)이 비어 있습니다.")
+    pc = Pinecone(api_key=api_key)
+    return pc.Index(INDEX_NAME)
 
-pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(INDEX_NAME)
-
-# 실제 인덱스 차원 확인(기본값은 INDEX_DIM/ TARGET_INDEX_DIM 환경변수)
-INDEX_DIM = read_index_dim(index, int(os.getenv('INDEX_DIM', os.getenv('TARGET_INDEX_DIM', '1024'))))
+@lru_cache(maxsize=1)
+def _get_index_dim() -> int:
+    default_dim = int(os.getenv('INDEX_DIM', os.getenv('TARGET_INDEX_DIM', '1024')))
+    idx = _get_pinecone_index()
+    return read_index_dim(idx, default_dim)
 
 # -----------------------
-# (선택) 재랭커
+# (선택) 재랭커도 지연 로드
 # -----------------------
-USE_RERANKER = os.getenv("USE_RERANKER", "0") == "1"
-reranker = None
-if USE_RERANKER:
+@lru_cache(maxsize=1)
+def _get_reranker():
+    if os.getenv("USE_RERANKER", "0") != "1":
+        return None
     try:
-        from sentence_transformers import CrossEncoder  # 재랭커만 필요할 때
-        RERANKER_MODEL = os.getenv("RERANKER_MODEL", "jinaai/jina-reranker-v2-base-multilingual")
-        reranker = CrossEncoder(RERANKER_MODEL)
+        from sentence_transformers import CrossEncoder
+        model_id = os.getenv("RERANKER_MODEL", "jinaai/jina-reranker-v2-base-multilingual")
+        return CrossEncoder(model_id)
     except Exception as e:
         print(f"[WARN] Reranker load failed: {e}")
-        reranker = None
+        return None
 
 # -----------------------
 # 검색
@@ -162,16 +162,23 @@ def retrieve(query: str,
              min_score: float = 0.0) -> List[Dict[str, Any]]:
     """
     순수 RAG용 조회. 결과는 정리된 텍스트와 메타데이터 포함.
-    - 임베딩은 원격(Hugging Face Inference API)으로만 계산 → 컨테이너 메모리 1GB에서도 안정
+    - 모든 외부 네트워크 초기화는 '지연 로드' → 서버 기동이 빨라지고 503(포트 미바인딩) 방지
+    - 임베딩은 원격(HF Inference API) 사용 → 1GB 메모리에서 안정
     - e5 계열 인덱스와 호환되도록 query prefix 자동 적용
     """
+    # 0) 필수 리소스 준비(최초 1회만 네트워크 접근)
+    index = _get_pinecone_index()
+    index_dim = _get_index_dim()
+
     # 1) 쿼리 정규화 + e5 query prefix
     norm = _normalize(query)
     q_text = f"query: {norm}" if _is_e5(EMBED_MODEL) else norm
 
     # 2) 쿼리 임베딩(원격)
-    _embedder = get_query_embedder()                # hf-remote(권장) 또는 설정에 따른 provider
-    q_vec_np = _embedder.embed([q_text])[0]         # numpy.ndarray([INDEX_DIM], float32)
+    _embedder = get_query_embedder()                # HF 원격 또는 구성된 프로바이더
+    q_vec_np = _embedder.embed([q_text])[0]         # numpy.ndarray([index_dim], float32)
+    if q_vec_np.shape[0] != index_dim:
+        raise RuntimeError(f"Embedding dim {q_vec_np.shape[0]} != index dim {index_dim}")
     q_emb = q_vec_np.astype("float32").tolist()     # Pinecone에 넣을 list[float]
 
     # 3) 필터 구성
