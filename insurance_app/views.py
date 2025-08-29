@@ -713,36 +713,13 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
 # 용어 사전 페이지 & API
 # ────────────────────────────────────────────────────────────────────────────────
 def glossary(request):
-    q = (request.GET.get("q") or "").strip()
-    cat = (request.GET.get("cat") or "").strip()
-
-    # 기본 조회(사전 정렬)
-    qs = GlossaryTerm.objects.all().order_by("term")
-
-    # 검색어 적용 (term/short/long + aliases 대충 포함검색)
-    if q:
-        qs = qs.filter(
-            Q(term__icontains=q) |
-            Q(short_def__icontains=q) |
-            Q(long_def__icontains=q) |
-            Q(aliases__icontains=q)
-        )
-
-    # 파이썬 레벨에서 3개 버킷 필터링(데이터 규모가 수백건 수준이라 충분히 가볍습니다)
-    terms_all = list(qs)
-    if cat and cat in BUCKETS:
-        terms = [t for t in terms_all if infer_bucket(t) == cat]
-    else:
-        terms = terms_all
-
-    context = {
-        "terms": terms,
-        "categories": BUCKETS,  # 드롭다운에 3개만 노출
-        "q": q,
-        "cat": cat,
-    }
-    return render(request, "insurance_app/glossary.html", context)
-
+    try:
+        terms = list(GlossaryTerm.objects.all().order_by('term'))
+    except Exception as e:
+        # 원인 확인을 위해 메시지 노출, 500이긴 하지만 템플릿 단계에서 죽지 않게 함
+        return HttpResponse(f"Glossary error: {e}", status=500)
+    # 데이터가 없어도 템플릿이 안전하게 렌더링되도록 보장
+    return render(request, "insurance_portal/glossary.html", {"terms": terms or []})
 def glossary_api(request: HttpRequest) -> HttpResponse:
     q = (request.GET.get("q") or "").strip()
     cat = (request.GET.get("cat") or "").strip()
