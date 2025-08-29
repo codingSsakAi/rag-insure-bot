@@ -21,6 +21,16 @@
                         text-decoration:none;font-weight:700;cursor:pointer}
     .logout{background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;border-color:transparent}
   </style>
+<script>
+(function () {
+  try {
+    var isLocal = /^(127\.0\.0\.1|localhost)(:|$)/.test(location.host);
+    if (isLocal && location.protocol === 'https:') {
+      location.replace('http://' + location.host + location.pathname + location.search + location.hash);
+    }
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
   <div class="container">

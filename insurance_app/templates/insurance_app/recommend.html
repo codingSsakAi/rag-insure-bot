@@ -65,6 +65,17 @@
         .logout-btn { background: linear-gradient(135deg, #e74c3c, #c0392b); }
         .logout-btn:hover { background: linear-gradient(135deg, #c0392b, #e74c3c); }
     </style>
+    <script>
+(function () {
+  try {
+    var isLocal = /^(127\.0\.0\.1|localhost)(:|$)/.test(location.host);
+    if (isLocal && location.protocol === 'https:') {
+      // 개발서버는 http만 지원 → http로 즉시 되돌림
+      location.replace('http://' + location.host + location.pathname + location.search + location.hash);
+    }
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
     <div class="container">

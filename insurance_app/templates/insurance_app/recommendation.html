@@ -43,6 +43,16 @@
     @media (max-width:768px){.container{margin:8px;border-radius:16px}.chat-box{min-height:300px}}
     mark{background:#fff2ac;padding:0 .2em;border-radius:.2em}
   </style>
+<script>
+(function () {
+  try {
+    var isLocal = /^(127\.0\.0\.1|localhost)(:|$)/.test(location.host);
+    if (isLocal && location.protocol === 'https:') {
+      location.replace('http://' + location.host + location.pathname + location.search + location.hash);
+    }
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
   <div class="container">
