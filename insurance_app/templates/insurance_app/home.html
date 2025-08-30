@@ -21,16 +21,16 @@
                         text-decoration:none;font-weight:700;cursor:pointer}
     .logout{background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;border-color:transparent}
   </style>
-<script>
-(function () {
-  try {
-    var isLocal = /^(127\.0\.0\.1|localhost)(:|$)/.test(location.host);
-    if (isLocal && location.protocol === 'https:') {
-      location.replace('http://' + location.host + location.pathname + location.search + location.hash);
-    }
-  } catch (e) {}
-})();
-</script>
+  <script>
+  (function () {
+    try {
+      var isLocal = /^(127\.0\.0\.1|localhost)(:|$)/.test(location.host);
+      if (isLocal && location.protocol === 'https:') {
+        location.replace('http://' + location.host + location.pathname + location.search + location.hash);
+      }
+    } catch (e) {}
+  })();
+  </script>
 </head>
 <body>
   <div class="container">
@@ -60,9 +60,6 @@
       {% endif %}
     </div>
   </div>
-
-  <!-- ✅ 아카이브에서 제공된 토글/FAB UI + 관련 스크립트/모달 일체 삽입 -->
-  {% include "insurance_portal/partials/_portal_inject.html" %}
 
 </body>
 </html>
