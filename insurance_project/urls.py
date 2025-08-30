@@ -16,7 +16,11 @@ urlpatterns = [
     path("logout/", app_views.logout_view, name="logout"),
     path("mypage/", app_views.mypage, name="mypage"),
     path("recommend/", app_views.recommend_insurance, name="recommend_insurance"),
-    path("insurance-recommendation/", app_views.insurance_recommendation, name="insurance_recommendation"),
+    path(
+        "insurance-recommendation/",
+        app_views.insurance_recommendation,
+        name="insurance_recommendation",
+    ),
     path("glossary/", app_views.glossary, name="glossary"),
     path("api/glossary", app_views.glossary_api, name="glossary_api"),
 
@@ -38,12 +42,7 @@ except Exception:
     # 포털 앱이 없는 배포에서도 동작하도록 무시
     pass
 
-# ───────────────── 정적/미디어 ─────────────────
-# 일반 정적/미디어
-urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
-
-# 개발 편의를 위한 포털 전용 정적 경로(아카이브/루트 모두 지원)
+# ───────────────── 개발 편의용: 정적 파일(포털) 서빙 ─────────────────
 _portal_static_roots = [
     settings.BASE_DIR / "insurance_portal" / "static" / "insurance_portal",
     settings.BASE_DIR / "0826-5" / "insurance_portal" / "static" / "insurance_portal",
@@ -58,3 +57,15 @@ if settings.DEBUG:
                     {"document_root": root},
                 ),
             ]
+
+# ───────────────── 정적 이미지(협의서 도면) Fallback ─────────────────
+# DEBUG가 꺼져 있어도 협의서 이미지가 보이도록 /static/images/* 를 직접 서빙
+_accident_images_root = settings.BASE_DIR / "accident_project" / "static" / "images"
+if _accident_images_root.exists():
+    urlpatterns += [
+        re_path(
+            r"^static/images/(?P<path>.*)$",
+            static_serve,
+            {"document_root": _accident_images_root},
+        ),
+    ]
