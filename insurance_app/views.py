@@ -12,6 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from django.conf import settings
 
 from django.http import FileResponse, Http404
+from django.views.decorators.http import require_http_methods
+from django.db import IntegrityError
+from django.contrib.auth import get_user_model
 from django.http import (
     HttpRequest, HttpResponse, JsonResponse,
     FileResponse, Http404,
@@ -30,16 +33,12 @@ from django.contrib.auth.decorators import login_required
 
 # 아카이브 폼/모델/검색/처리기
 from .forms import CustomUserCreationForm, EmailPasswordChangeForm
-from .forms import SignupForm, LoginForm
-from .models import GlossaryTerm, Article, Inquiry  # 모델은 그대로 models에서
+from .models import GlossaryTerm
 from django.db.models import Q
 from .pdf_processor import EnhancedPDFProcessor
 from .pinecone_search import retrieve_insurance_clauses
 
 from insurance_app.utils.buckets import BUCKETS, infer_bucket
-from django.db import IntegrityError
-from django.contrib.auth import get_user_model
-from django.views.decorators.http import require_http_methods
 
 # ---------------------------------------------------------------------
 # (중요) 아카이브 내 기존 llm_client 재사용: 다양한 함수/클래스 시그니처 자동 탐색
@@ -607,32 +606,27 @@ def home(request: HttpRequest) -> HttpResponse:
 @require_http_methods(["GET", "POST"])
 def signup(request: HttpRequest) -> HttpResponse:
     if request.method == "POST":
-        form = SignupForm(request.POST)
+        form = CustomUserCreationForm(request.POST)
         if form.is_valid():
             User = get_user_model()
             username = (form.cleaned_data.get("username") or "").strip()
 
-            # 1) 사전 중복 검사
             if username and User.objects.filter(username=username).exists():
                 form.add_error("username", "이미 사용 중인 아이디입니다.")
                 messages.error(request, "이미 사용 중인 아이디입니다. 다른 아이디를 입력해 주세요.")
             else:
                 try:
-                    # 2) 저장 시점 경쟁 조건까지 방지
                     user = form.save()
-                    messages.success(request, "회원가입이 완료되었습니다. 로그인해 주세요.")
-                    return redirect("login")  # 가입 후 로그인 화면으로 이동
+                    messages.success(request, f"{user.username}님의 계정이 생성되었습니다. 로그인해 주세요.")
+                    return redirect("login")
                 except IntegrityError:
-                    # DB 유니크 제약 위반(동시 제출 등)도 폼 에러로 처리
                     form.add_error("username", "이미 사용 중인 아이디입니다.")
                     messages.error(request, "이미 사용 중인 아이디입니다. 다른 아이디를 입력해 주세요.")
         else:
             messages.error(request, "입력값을 확인해 주세요.")
     else:
-        form = SignupForm()
-    return render(request, "insurance_app/auth/signup.html", {"form": form})
-
-
+        form = CustomUserCreationForm()
+    return render(request, "insurance_app/signup.html", {"form": form})
 
 def login_view(request: HttpRequest) -> HttpResponse:
     if request.method == 'POST':
@@ -781,7 +775,7 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
             if url:
                 item["url"] = url
                 item["pdf_url"] = url
-            item.setdefault("doc_url", item.get("url"))
+            item.setdefault("doc_url", item.get("url") or item.get("pdf_url"))
             item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
             refs_out.append(item)
 
@@ -800,7 +794,7 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
             if url:
                 item["url"] = url
                 item["pdf_url"] = url
-            item.setdefault("doc_url", item.get("url"))
+            item.setdefault("doc_url", item.get("url") or item.get("pdf_url"))
             item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
             results_out.append(item)
 
