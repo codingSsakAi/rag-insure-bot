@@ -23,9 +23,8 @@
     .chat-box{max-height:560px;min-height:360px;overflow:auto;border:1px solid #e5e7eb;border-radius:12px;padding:14px;background:#fafafa}
     .msg{margin:10px 0;display:flex}
     .msg.user{justify-content:flex-end}
-    .bubble{max-width:80%;padding:12px 14px;border-radius:14px;border:1px solid #e5e7eb;line-height:1.6}
+    .bubble{max-width:80%;padding:12px 14px;border-radius:14px;border:1px solid #e5e7eb;line-height:1.6;background:#f8f9fa}
     .msg.user .bubble{background:#e7f1ff;border-color:#cfe0ff}
-    .msg.assistant .bubble{background:#f8f9fa}
     .meta{margin-top:8px;font-size:.85em;color:#6b7280}
     .typing{display:inline-flex;align-items:center;gap:8px}
     .dot{width:8px;height:8px;border-radius:50%;background:#9aa7b2;animation:bounce 1.2s infinite}
@@ -43,16 +42,16 @@
     @media (max-width:768px){.container{margin:8px;border-radius:16px}.chat-box{min-height:300px}}
     mark{background:#fff2ac;padding:0 .2em;border-radius:.2em}
   </style>
-<script>
-(function () {
-  try {
-    var isLocal = /^(127\.0\.0\.1|localhost)(:|$)/.test(location.host);
-    if (isLocal && location.protocol === 'https:') {
-      location.replace('http://' + location.host + location.pathname + location.search + location.hash);
-    }
-  } catch (e) {}
-})();
-</script>
+  <script>
+  (function () {
+    try {
+      var isLocal = /^(127\.0\.0\.1|localhost)(:|$)/.test(location.host);
+      if (isLocal && location.protocol === 'https:') {
+        location.replace('http://' + location.host + location.pathname + location.search + location.hash);
+      }
+    } catch (e) {}
+  })();
+  </script>
 </head>
 <body>
   <div class="container">
@@ -168,7 +167,6 @@
         const h = await fetch(url, { method:'HEAD' });
         if (h.ok) return true;
         if (h.status === 405) {
-          // 일부 서버가 HEAD 미지원일 수 있음 → 최소 바이트 GET
           const g = await fetch(url, { method:'GET', headers:{'Range':'bytes=0-0'} });
           return g.ok;
         }
@@ -182,9 +180,9 @@
       if (!c) return "";
 
       const candidates = [
-        `/documents/${c}/${c}.pdf`, // 권장 규칙
-        `/documents/${c}.pdf`,
-        `${MEDIA_BASE}documents/${c}.pdf`,
+        `/documents/${c}/${c}.pdf`,           // 권장 규칙(문서 폴더/문서명)
+        `/documents/${c}.pdf`,                // 루트 documents
+        `${MEDIA_BASE}documents/${c}.pdf`,    // MEDIA 문서 경로
         `${MEDIA_BASE}${c}.pdf`,
         `/insurance_app/documents/${c}.pdf`,
         `/insurance_app/${c}.pdf`,
@@ -210,16 +208,17 @@
       }catch(e){ return text; }
     }
 
-    // 참고 링크 HTML 비동기 생성 (doc_url/pdf_link 우선, 없으면 회사명으로 탐색)
+    // 참고 링크 HTML 생성 (doc_url/pdf_link 우선, 없으면 url/pdf_url, 그래도 없으면 회사명으로 탐색)
     async function renderReferences(refs){
       const items = await Promise.all((refs||[]).map(async (ref, i)=>{
-        const page = ref.page || ref.page_number || '';
-        let href = ref.doc_url || ref.pdf_link || '';
+        const page = ref.page || ref.page_number || ref.page_index || '';
+        let href = ref.doc_url || ref.pdf_link || ref.url || ref.pdf_url || '';
         if (!href){
-          const co = ref.company || ref.insurer || '';
+          const co = ref.company || ref.insurer || ref.insurer_name || ref.company_name || '';
           href = await resolveDocUrl(co);
         }
-        const label = (ref.company || ref.insurer || '약관') + (page?` / p.${page}`:'');
+        const labelName = ref.company || ref.insurer || ref.insurer_name || ref.company_name || '약관';
+        const label = labelName + (page?` / p.${page}`:'');
         const link = href ? `<a href="${href}${page?`#page=${page}`:''}" target="_blank" rel="noopener">원문 보기</a>` : '';
         return `(${i+1}) ${label} ${link}`;
       }));
@@ -250,13 +249,10 @@
           return;
         }
 
-        const answerHtml = highlight((data.answer||'').replace(/\n/g,'\n'), q);
+        const answerHtml = `<div style="white-space:pre-wrap">${highlight(String(data.answer||''), q)}</div>`;
         const refsHtml = await renderReferences(data.references || []);
 
-        const html = `
-          <div style="white-space:pre-wrap">${answerHtml}</div>
-          ${refsHtml ? `<div class="meta">근거<br/>${refsHtml}</div>` : ''}
-        `;
+        const html = `${answerHtml}${refsHtml ? `<div class="meta">근거<br/>${refsHtml}</div>` : ''}`;
         replaceBubble(pendingId, html);
       }catch(e){
         replaceBubble(pendingId, `<div style="color:#b91c1c">요청 중 오류가 발생했습니다.</div>`);
