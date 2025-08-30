@@ -57,17 +57,17 @@ AUTH_USER_MODEL = "insurance_app.CustomUser"
 # ───────────────── 미들웨어 ─────────────────
 # >>> 라우팅에 영향 주는 신규 폴백/가로채기 미들웨어는 넣지 않습니다. <<<
 MIDDLEWARE = [
-    "django.middleware.security.SecurityMiddleware",
-    # 정적 브릿지: /static/insurance_portal/** 를 원본에서 직접 서빙
-    "insurance_project.middleware.PortalStaticBridgeMiddleware",
-    "django.contrib.sessions.middleware.SessionMiddleware",
-    "django.middleware.common.CommonMiddleware",
-    "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware",
-    "django.contrib.messages.middleware.MessageMiddleware",
-    "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    # 성공한 HTML에만 원본 토글 CSS/JS 주입 (200 응답에만 동작)
-    "insurance_project.middleware.PortalAutoInjectMiddleware",
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+
+    # 🔥 아래 두 줄은 반드시 삭제(또는 주석 처리)
+    # 'insurance_project.middleware.PortalAutoInjectMiddleware',
+    # 'insurance_project.middleware.PortalStaticBridgeMiddleware',
 ]
 
 ROOT_URLCONF = "insurance_project.urls"

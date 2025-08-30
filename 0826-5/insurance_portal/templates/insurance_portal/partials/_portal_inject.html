@@ -1,35 +1,28 @@
 {% load static %}
-{# 안전 파셜: 포털 로더/폴백 FAB 절대 삽입 금지 #}
+{# 안전 파셜: 햄버거(≡) FAB를 만들던 로더는 제외하고, + FAB/챗봇만 로드 #}
 
-{# 필요한 UI 스크립트만 로드 (플러스 FAB/챗봇/내비게이션) #}
 <script src="{% static 'insurance_portal/js/navigation_handler.js' %}"></script>
 <script src="{% static 'insurance_portal/js/chatbot.js' %}"></script>
 <script src="{% static 'insurance_portal/js/fab-controller.js' %}"></script>
 
 <script>
-/*
-  혹시 다른 페이지/스크립트가 과거 로더를 통해 ip-fallback(≡)을 삽입해도
-  즉시 제거하여 화면에 뜨지 않게 한다. (생성 자체를 안 하지만, 방어용)
-*/
+/* 혹시 과거 스크립트가 ip-fallback(≡) 버튼을 집어넣더라도 즉시 제거 */
 (function () {
   function killFallback() {
     try {
-      var btn = document.getElementById('ip-fallback');
-      if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+      var x = document.getElementById('ip-fallback');
+      if (x && x.parentNode) x.parentNode.removeChild(x);
     } catch (_) {}
   }
-  // DOM 준비 시 1회 제거
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', killFallback, { once: true });
+    document.addEventListener('DOMContentLoaded', killFallback, { once:true });
   } else {
     killFallback();
   }
-  // 이후에라도 누가 동적으로 끼워 넣으면 즉시 제거
   try {
-    var mo = new MutationObserver(killFallback);
-    mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
+    new MutationObserver(killFallback)
+      .observe(document.documentElement || document.body, { childList:true, subtree:true });
   } catch (_) {}
 })();
 </script>
-
 
