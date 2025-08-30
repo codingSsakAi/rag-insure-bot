@@ -174,6 +174,7 @@ def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
 # ────────────────────────────────────────────────────────────────────────────────
 # Glossary JSON 로딩 유틸 (DB 비어있을 때도 페이지/API가 작동하도록)
 # ────────────────────────────────────────────────────────────────────────────────
+
 def _iter_glossary_json_files() -> List[Path]:
     files: List[Path] = []
     try:
@@ -183,21 +184,40 @@ def _iter_glossary_json_files() -> List[Path]:
         pass
     return files
 
+
+
 def _load_glossary_json() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for p in _iter_glossary_json_files():
         try:
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                # Normalize to list of dicts
+                rows = []
                 if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            out.append(item)
+                    rows = [x for x in data if isinstance(x, dict)]
                 elif isinstance(data, dict) and "results" in data and isinstance(data["results"], list):
-                    out.extend([x for x in data["results"] if isinstance(x, dict)])
+                    rows = [x for x in data["results"] if isinstance(x, dict)]
+                # annotate by filename if missing
+                fname = p.name
+                for item in rows:
+                    if "meta" not in item or not isinstance(item["meta"], dict):
+                        item["meta"] = {}
+                    item["meta"].setdefault("_source_path", str(p))
+                    if not item.get("category"):
+                        up = fname.upper()
+                        if "FAQ" in up:
+                            item["category"] = "과실비율/FAQ"
+                        elif "용어해설" in fname or "용어 해설" in fname:
+                            item["category"] = "과실비율/용어해설"
+                        else:
+                            # default bucket
+                            item["category"] = "보험용어"
+                    out.append(item)
         except Exception:
             continue
     return out
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 검색 결과 정제/요약(노이즈 차단 강화)
@@ -586,7 +606,7 @@ def signup(request: HttpRequest) -> HttpResponse:
         if form.is_valid():
             user = form.save()
             messages.success(request, f'{user.username}님의 계정이 생성되었습니다.')
-            return redirect('signup')  # 가입 후 로그인/홈 등 원하는 경로로 조정
+            return redirect('login')  # 가입 후 로그인/홈 등 원하는 경로로 조정
     else:
         form = CustomUserCreationForm()
     return render(request, 'insurance_app/signup.html', {'form': form})
@@ -783,9 +803,18 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
 # 용어 사전 페이지 & API (DB 비어도 JSON으로 안전 동작)
 # ────────────────────────────────────────────────────────────────────────────────
 def glossary(request: HttpRequest) -> HttpResponse:
-    # 1) DB 우선
+    # Query params
+    q = (request.GET.get("q") or "").strip()
+    cat = (request.GET.get("cat") or "").strip()
+
+    # 1) Try DB first
+    terms_payload: List[Dict[str, Any]] = []
     try:
-        terms_qs = list(GlossaryTerm.objects.all().order_by('term'))
+        qs = GlossaryTerm.objects.all().order_by('term')
+        if q:
+            qs = qs.filter(Q(term__icontains=q) | Q(short_def__icontains=q) | Q(long_def__icontains=q) | Q(aliases__icontains=q))
+        if cat:
+            qs = qs.filter(category=cat)
         terms_payload = [{
             "slug": t.slug,
             "term": t.term,
@@ -796,41 +825,66 @@ def glossary(request: HttpRequest) -> HttpResponse:
             "related": t.related,
             "meta": t.meta,
             "updated_at": t.updated_at.isoformat() if getattr(t, "updated_at", None) else "",
-        } for t in terms_qs]
+        } for t in qs]
     except Exception:
         terms_payload = []
 
-    # 2) 비어있으면 JSON fallback
+    # 2) Fallback to JSON if DB empty
     if not terms_payload:
         json_terms = _load_glossary_json()
-        # normalize keys for template
-        norm = []
+        # Infer category from JSON if missing
         for it in json_terms:
-            norm.append({
-                "slug": it.get("slug") or it.get("id") or "",
-                "term": it.get("term") or it.get("title") or "",
-                "short_def": it.get("short_def") or it.get("short") or it.get("desc") or "",
-                "long_def": it.get("long_def") or it.get("long") or it.get("description") or "",
-                "category": it.get("category") or it.get("cat") or "",
-                "aliases": it.get("aliases") or it.get("alias") or "",
-                "related": it.get("related") or "",
-                "meta": it.get("meta") or {},
-                "updated_at": it.get("updated_at") or "",
-            })
-        terms_payload = norm
+            if not it.get("category"):
+                src = (it.get("meta", {}) or {}).get("source", "")
+                s = str(src)
+                if "FAQ" in s.upper():
+                    it["category"] = "과실비율/FAQ"
+                elif "용어해설" in s or "용어 해설" in s:
+                    it["category"] = "과실비율/용어해설"
+                else:
+                    it["category"] = "보험용어"
+        # filter by q/cat
+        def _match(it):
+            if q:
+                txt = " ".join([str(it.get("term","")), str(it.get("short_def","")), str(it.get("long_def","")), " ".join(map(str, it.get("aliases",[]) or []))]).lower()
+                if q.lower() not in txt:
+                    return False
+            if cat and str(it.get("category","")).strip() != cat:
+                return False
+            return True
+        terms_payload = [{
+            "slug": it.get("slug") or it.get("id") or "",
+            "term": it.get("term") or it.get("title") or "",
+            "short_def": it.get("short_def") or it.get("short") or it.get("desc") or "",
+            "long_def": it.get("long_def") or it.get("long") or it.get("description") or "",
+            "category": it.get("category") or "",
+            "aliases": it.get("aliases") or [],
+            "related": it.get("related") or [],
+            "meta": it.get("meta") or {},
+            "updated_at": "",
+        } for it in json_terms if _match(it)]
 
-    # 3) 템플릿 우선순위: insurance_portal → insurance_app → 간단 렌더
-    ctx = {"terms": terms_payload or []}
+    # 3) Build category list (stable order if possible)
+    all_cats = []
+    seen = set()
+    preferred = ["보험용어", "과실비율/용어해설", "과실비율/FAQ"]
+    for c in preferred + sorted({t.get("category","") for t in terms_payload}):
+        c = str(c).strip()
+        if c and c not in seen:
+            seen.add(c)
+            all_cats.append(c)
+
+    ctx = {"terms": terms_payload, "categories": all_cats, "q": q, "cat": cat}
     try:
         return render(request, "insurance_portal/glossary.html", ctx)
     except TemplateDoesNotExist:
         try:
             return render(request, "insurance_app/glossary.html", ctx)
         except TemplateDoesNotExist:
-            # 최소 보장 (템플릿 없어도 페이지가 죽지 않도록)
+            # Minimal fallback
             html = ["<h2>용어 사전</h2><ul>"]
             for t in terms_payload[:500]:
-                html.append(f"<li><b>{t['term']}</b> — {t['short_def']}</li>")
+                html.append(f"<li><b>{t['term']}</b> — {t.get('short_def','')}</li>")
             html.append("</ul>")
             return HttpResponse("\n".join(html))
 
