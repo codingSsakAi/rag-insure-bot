@@ -15,6 +15,7 @@ from django.http import FileResponse, Http404
 from django.views.decorators.http import require_http_methods
 from django.db import IntegrityError
 from django.contrib.auth import get_user_model
+from django.core.paginator import Paginator
 from django.http import (
     HttpRequest, HttpResponse, JsonResponse,
     FileResponse, Http404,
@@ -877,11 +878,16 @@ def glossary(request: HttpRequest) -> HttpResponse:
             "updated_at": "",
         } for it in data if _match(it)]
 
+    # Fixed three tabs
     categories = ALLOWED_CATS[:]
 
-    page_obj = _paginate(request, terms_payload, per_page=30)
+    # Inline pagination (no dependency on _paginate)
+    page_number = request.GET.get("page", "1")
+    paginator = Paginator(terms_payload, 30)
+    page_obj = paginator.get_page(page_number)
+
     ctx = {
-        "terms": page_obj.object_list,
+        "terms": list(page_obj.object_list),
         "page_obj": page_obj,
         "categories": categories,
         "q": q,
