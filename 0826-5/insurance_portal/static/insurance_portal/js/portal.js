@@ -1,9 +1,8 @@
-// insurance_portal/portal.js
-// (전체 교체본) — 우하단 3선 토글(≡)과 사이드 패널 DOM 생성 로직을 완전히 제거.
-// 다른 코드가 IPORTAL API를 호출하더라도 에러가 나지 않도록 no-op 스텁만 노출합니다.
+// static/insurance_portal/portal.js
+// 3선 FAB과 사이드 패널을 생성하던 코드를 전부 제거한 no-op 버전.
+// 다른 코드가 window.IPORTAL.* 를 호출해도 에러가 없도록 스텁만 제공.
 
 (function () {
-  // 과거 버전에서 만들어졌을 수도 있는 요소는 안전하게 제거
   function nukeLegacy() {
     ['ip-fab', 'ip-overlay', 'ip-panel'].forEach(function (id) {
       var el = document.getElementById(id);
@@ -18,14 +17,13 @@
   }
   window.addEventListener('load', nukeLegacy);
 
-  // 호환성 유지를 위한 no-op API
+  // no-op API (호환용)
   var api = window.IPORTAL || {};
-  api.open = function(){ /* no-op */ };
-  api.close = function(){ /* no-op */ };
-  api.mount = function(){ /* no-op */ };
-  api.unmount = function(){ /* no-op */ };
+  api.open = function(){};
+  api.close = function(){};
+  api.mount = function(){};
+  api.unmount = function(){};
   window.IPORTAL = api;
 
-  // ✅ 의도적으로 아무것도 생성하지 않습니다.
-  //    (오른쪽 ‘+’ 사이드 토글은 다른 코드라서 그대로 유지됩니다)
+  // ✅ 의도적으로 아무것도 생성하지 않음.
 })();
