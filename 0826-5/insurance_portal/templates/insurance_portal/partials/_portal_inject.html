@@ -15,12 +15,17 @@
 <link rel="stylesheet" href="{% static 'insurance_portal/css/claim_knowledge.css' %}">
 <link rel="stylesheet" href="{% static 'insurance_portal/css/chatbot.css' %}">
 
-{# ✅ 홈에서만 우측 중앙 + FAB 표시 (3선 토글 포함 안 함) #}
-{% if show_fab or request.path == '/' or (request.resolver_match and (request.resolver_match.url_name == 'home' or request.resolver_match.url_name == 'index' or request.resolver_match.url_name == 'portal_home')) %}
+{# ✅ 홈에서만 우측 중앙 + FAB 표시 (우하단 3선 토글은 포함하지 않음) #}
+{# 주의: Django smartif는 괄호를 지원하지 않으므로 and/or를 순차로 기술 #}
+{% if show_fab
+      or request.path == '/'
+      or request.resolver_match and request.resolver_match.url_name == 'home'
+      or request.resolver_match and request.resolver_match.url_name == 'index'
+      or request.resolver_match and request.resolver_match.url_name == 'portal_home' %}
   {% include 'insurance_portal/partials/_floating_fab.html' %}
 {% endif %}
 
-{# 공용 모달/레이어 (기능 유지) #}
+{# 공용 모달/레이어 (기존 기능 유지) #}
 {% include 'insurance_portal/partials/_guide_modal.html' %}
 {% include 'insurance_portal/partials/_knowhow_modal.html' %}
 {% include 'insurance_portal/partials/_claim_knowledge.html' %}
@@ -35,4 +40,4 @@
 <script src="{% static 'insurance_portal/js/knowhow.js' %}"></script>
 <script src="{% static 'insurance_portal/js/fault_answer.js' %}"></script>
 <script src="{% static 'insurance_portal/js/claim_knowledge.js' %}"></script>
-<script src="{% static 'insurance_portal/js/chatbot.js' %_
+<script src="{% static 'insurance_portal/js/chatbot.js' %}"></script>
