@@ -1,34 +1,34 @@
-// static/insurance_portal/loader_strict.js
-// ──────────────────────────────────────────────────────────────────────────────
-// 레거시 포털 로더를 완전히 비활성화합니다.
-// - 외부 CSS/JS 로딩 안 함
-// - 자동 탐지/마운트 안 함
-// - fallbackButton(≡) 생성 절대 안 함
-// - 혹시 남아 있는 잔여 노드(ip-*)는 로드 시 즉시 제거
-// - 호환을 위해 IPORTAL API만 no-op으로 노출
-// ──────────────────────────────────────────────────────────────────────────────
+/* loader_strict.js — HARD KILL: do not load or mount anything, and remove legacy FABs. */
 (function () {
-  function removeLegacyNodes() {
-    ['ip-fab', 'ip-overlay', 'ip-panel', 'ip-fallback'].forEach(function (id) {
-      var el = document.getElementById(id);
+  // 1) 혹시 남아있는 과거 ip-* 요소들 제거
+  function nuke() {
+    const ids = ["ip-fab", "ip-fallback", "ip-overlay", "ip-panel"];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
       if (el && el.parentNode) el.parentNode.removeChild(el);
     });
+    // ip-* 계열 잔재가 DOM 어딘가에 들어간 경우까지 제거
+    try {
+      document.querySelectorAll('[id^="ip-"], .ip-item, .ip-sub').forEach(el => {
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+      });
+    } catch (_) {}
   }
+  nuke();
+  document.addEventListener("DOMContentLoaded", nuke);
 
-  // 페이지 수명주기 언제 들어와도 깨끗하게
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', removeLegacyNodes);
-  } else {
-    removeLegacyNodes();
-  }
-  window.addEventListener('load', removeLegacyNodes);
-
-  // 다른 스크립트가 IPORTAL을 기대해도 에러 안 나게 no-op 제공
+  // 2) 옛 코드가 전역 IPORTAL.*을 호출하더라도 아무 것도 하지 않도록 스텁 정의
+  //    (호출 자체는 성공처럼 끝나지만 화면 변화 없음)
+  const stub = function () { return false; };
   window.IPORTAL = window.IPORTAL || {};
-  ['mount', 'unmount', 'open', 'close'].forEach(function (k) {
-    window.IPORTAL[k] = function () {};
-  });
+  window.IPORTAL.mount = stub;
+  window.IPORTAL.unmount = stub;
+  window.IPORTAL.open = stub;
+  window.IPORTAL.close = stub;
 
-  // 과거 커스텀 엔트리를 기대하더라도 아무 것도 하지 않는 no-op 제공
-  window.__PORTAL_ENTRY__ = function () {};
+  // 3) 진단용 플래그(선택): 이 파일이 로드됐다면 true
+  window.__PORTAL_LOADER_STRICT__ = true;
+
+  // 4) 절대로 다른 CSS/JS를 "탐색/로드/시도" 하지 않습니다.
+  //    fallback 버튼도 생성하지 않습니다.
 })();
