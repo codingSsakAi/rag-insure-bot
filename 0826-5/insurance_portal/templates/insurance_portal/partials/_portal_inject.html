@@ -1,28 +1,3 @@
-{% load static %}
-{# 안전 파셜: 햄버거(≡) FAB를 만들던 로더는 제외하고, + FAB/챗봇만 로드 #}
-
-<script src="{% static 'insurance_portal/js/navigation_handler.js' %}"></script>
-<script src="{% static 'insurance_portal/js/chatbot.js' %}"></script>
-<script src="{% static 'insurance_portal/js/fab-controller.js' %}"></script>
-
-<script>
-/* 혹시 과거 스크립트가 ip-fallback(≡) 버튼을 집어넣더라도 즉시 제거 */
-(function () {
-  function killFallback() {
-    try {
-      var x = document.getElementById('ip-fallback');
-      if (x && x.parentNode) x.parentNode.removeChild(x);
-    } catch (_) {}
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', killFallback, { once:true });
-  } else {
-    killFallback();
-  }
-  try {
-    new MutationObserver(killFallback)
-      .observe(document.documentElement || document.body, { childList:true, subtree:true });
-  } catch (_) {}
-})();
-</script>
-
+<script defer src="/0826-5/insurance_portal/js/navigation_handler.js"></script>
+<script defer src="/0826-5/insurance_portal/js/chatbot.js"></script>
+<script defer src="/0826-5/insurance_portal/js/fab-controller.js"></script>
