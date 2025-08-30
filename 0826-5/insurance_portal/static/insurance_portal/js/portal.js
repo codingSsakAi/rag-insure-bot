@@ -1,29 +1,26 @@
 // static/insurance_portal/portal.js
-// 3선 FAB과 사이드 패널을 생성하던 코드를 전부 제거한 no-op 버전.
-// 다른 코드가 window.IPORTAL.* 를 호출해도 에러가 없도록 스텁만 제공.
+// 3선 FAB/사이드패널을 만들던 레거시 코드를 완전히 무력화(no-op) 합니다.
 
 (function () {
-  function nukeLegacy() {
-    ['ip-fab', 'ip-overlay', 'ip-panel'].forEach(function (id) {
+  function nuke() {
+    ['ip-fab', 'ip-overlay', 'ip-panel', 'ip-fallback'].forEach(function (id) {
       var el = document.getElementById(id);
       if (el && el.parentNode) el.parentNode.removeChild(el);
     });
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', nukeLegacy);
+    document.addEventListener('DOMContentLoaded', nuke);
   } else {
-    nukeLegacy();
+    nuke();
   }
-  window.addEventListener('load', nukeLegacy);
+  window.addEventListener('load', nuke);
 
-  // no-op API (호환용)
-  var api = window.IPORTAL || {};
-  api.open = function(){};
-  api.close = function(){};
-  api.mount = function(){};
-  api.unmount = function(){};
-  window.IPORTAL = api;
+  // 호환용 no-op
+  window.IPORTAL = window.IPORTAL || {};
+  ['open', 'close', 'mount', 'unmount'].forEach(function (k) {
+    window.IPORTAL[k] = function () {};
+  });
 
-  // ✅ 의도적으로 아무것도 생성하지 않음.
+  // ✅ 의도적으로 아무 것도 생성하지 않음
 })();
