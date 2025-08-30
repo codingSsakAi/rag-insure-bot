@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
+
+from django.http import FileResponse, Http404
 from django.http import (
     HttpRequest, HttpResponse, JsonResponse,
     FileResponse, Http404,
@@ -28,12 +30,16 @@ from django.contrib.auth.decorators import login_required
 
 # 아카이브 폼/모델/검색/처리기
 from .forms import CustomUserCreationForm, EmailPasswordChangeForm
-from .models import GlossaryTerm
+from .forms import SignupForm, LoginForm
+from .models import GlossaryTerm, Article, Inquiry  # 모델은 그대로 models에서
 from django.db.models import Q
 from .pdf_processor import EnhancedPDFProcessor
 from .pinecone_search import retrieve_insurance_clauses
 
 from insurance_app.utils.buckets import BUCKETS, infer_bucket
+from django.db import IntegrityError
+from django.contrib.auth import get_user_model
+from django.views.decorators.http import require_http_methods
 
 # ---------------------------------------------------------------------
 # (중요) 아카이브 내 기존 llm_client 재사용: 다양한 함수/클래스 시그니처 자동 탐색
@@ -174,50 +180,48 @@ def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
 # ────────────────────────────────────────────────────────────────────────────────
 # Glossary JSON 로딩 유틸 (DB 비어있을 때도 페이지/API가 작동하도록)
 # ────────────────────────────────────────────────────────────────────────────────
-
 def _iter_glossary_json_files() -> List[Path]:
+    base = Path(__file__).resolve().parent.parent
+    data_dir = base / "insurance_app" / "data"
     files: List[Path] = []
     try:
-        if DATA_DIR.exists():
-            files.extend(sorted(DATA_DIR.glob("*.json")))
+        if data_dir.exists():
+            files.extend(sorted(data_dir.glob("*.json")))
     except Exception:
         pass
     return files
 
-
-
 def _load_glossary_json() -> List[Dict[str, Any]]:
+    ALLOWED = {"보험용어","과실비율/용어해설","과실비율/FAQ"}
     out: List[Dict[str, Any]] = []
     for p in _iter_glossary_json_files():
         try:
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # Normalize to list of dicts
-                rows = []
-                if isinstance(data, list):
-                    rows = [x for x in data if isinstance(x, dict)]
-                elif isinstance(data, dict) and "results" in data and isinstance(data["results"], list):
-                    rows = [x for x in data["results"] if isinstance(x, dict)]
-                # annotate by filename if missing
-                fname = p.name
-                for item in rows:
-                    if "meta" not in item or not isinstance(item["meta"], dict):
-                        item["meta"] = {}
-                    item["meta"].setdefault("_source_path", str(p))
-                    if not item.get("category"):
-                        up = fname.upper()
-                        if "FAQ" in up:
-                            item["category"] = "과실비율/FAQ"
-                        elif "용어해설" in fname or "용어 해설" in fname:
-                            item["category"] = "과실비율/용어해설"
-                        else:
-                            # default bucket
-                            item["category"] = "보험용어"
-                    out.append(item)
+            data = json.load(open(p,"r",encoding="utf-8"))
+            rows = []
+            if isinstance(data, list):
+                rows = [x for x in data if isinstance(x, dict)]
+            elif isinstance(data, dict) and isinstance(data.get("results"), list):
+                rows = [x for x in data["results"] if isinstance(x, dict)]
+            fname = p.name
+            for it in rows:
+                it = dict(it)
+                if "meta" not in it or not isinstance(it["meta"], dict):
+                    it["meta"] = {}
+                it["meta"].setdefault("_source_path", str(p))
+                if not it.get("category"):
+                    up = fname.upper()
+                    if "FAQ" in up:
+                        it["category"] = "과실비율/FAQ"
+                    elif ("용어해설" in fname) or ("용어 해설" in fname):
+                        it["category"] = "과실비율/용어해설"
+                    else:
+                        it["category"] = "보험용어"
+                if it.get("category") not in ALLOWED:
+                    it["category"] = "보험용어"
+                out.append(it)
         except Exception:
             continue
     return out
-
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 검색 결과 정제/요약(노이즈 차단 강화)
@@ -600,16 +604,35 @@ def home(request: HttpRequest) -> HttpResponse:
     except TemplateDoesNotExist:
         return render(request, 'insurance_app/recommendation.html', context)
 
+@require_http_methods(["GET", "POST"])
 def signup(request: HttpRequest) -> HttpResponse:
-    if request.method == 'POST':
-        form = CustomUserCreationForm(request.POST)
+    if request.method == "POST":
+        form = SignupForm(request.POST)
         if form.is_valid():
-            user = form.save()
-            messages.success(request, f'{user.username}님의 계정이 생성되었습니다.')
-            return redirect('login')  # 가입 후 로그인/홈 등 원하는 경로로 조정
+            User = get_user_model()
+            username = (form.cleaned_data.get("username") or "").strip()
+
+            # 1) 사전 중복 검사
+            if username and User.objects.filter(username=username).exists():
+                form.add_error("username", "이미 사용 중인 아이디입니다.")
+                messages.error(request, "이미 사용 중인 아이디입니다. 다른 아이디를 입력해 주세요.")
+            else:
+                try:
+                    # 2) 저장 시점 경쟁 조건까지 방지
+                    user = form.save()
+                    messages.success(request, "회원가입이 완료되었습니다. 로그인해 주세요.")
+                    return redirect("login")  # 가입 후 로그인 화면으로 이동
+                except IntegrityError:
+                    # DB 유니크 제약 위반(동시 제출 등)도 폼 에러로 처리
+                    form.add_error("username", "이미 사용 중인 아이디입니다.")
+                    messages.error(request, "이미 사용 중인 아이디입니다. 다른 아이디를 입력해 주세요.")
+        else:
+            messages.error(request, "입력값을 확인해 주세요.")
     else:
-        form = CustomUserCreationForm()
-    return render(request, 'insurance_app/signup.html', {'form': form})
+        form = SignupForm()
+    return render(request, "insurance_app/auth/signup.html", {"form": form})
+
+
 
 def login_view(request: HttpRequest) -> HttpResponse:
     if request.method == 'POST':
@@ -758,6 +781,8 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
             if url:
                 item["url"] = url
                 item["pdf_url"] = url
+            item.setdefault("doc_url", item.get("url"))
+            item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
             refs_out.append(item)
 
         results_out: List[Dict[str, Any]] = []
@@ -775,6 +800,8 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
             if url:
                 item["url"] = url
                 item["pdf_url"] = url
+            item.setdefault("doc_url", item.get("url"))
+            item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
             results_out.append(item)
 
         return JsonResponse({
@@ -803,11 +830,11 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
 # 용어 사전 페이지 & API (DB 비어도 JSON으로 안전 동작)
 # ────────────────────────────────────────────────────────────────────────────────
 def glossary(request: HttpRequest) -> HttpResponse:
-    # Query params
     q = (request.GET.get("q") or "").strip()
     cat = (request.GET.get("cat") or "").strip()
 
-    # 1) Try DB first
+    ALLOWED_CATS = ["보험용어", "과실비율/용어해설", "과실비율/FAQ"]
+
     terms_payload: List[Dict[str, Any]] = []
     try:
         qs = GlossaryTerm.objects.all().order_by('term')
@@ -820,7 +847,7 @@ def glossary(request: HttpRequest) -> HttpResponse:
             "term": t.term,
             "short_def": t.short_def,
             "long_def": t.long_def,
-            "category": t.category,
+            "category": t.category if t.category in ALLOWED_CATS else "보험용어",
             "aliases": t.aliases,
             "related": t.related,
             "meta": t.meta,
@@ -829,24 +856,16 @@ def glossary(request: HttpRequest) -> HttpResponse:
     except Exception:
         terms_payload = []
 
-    # 2) Fallback to JSON if DB empty
     if not terms_payload:
-        json_terms = _load_glossary_json()
-        # Infer category from JSON if missing
-        for it in json_terms:
-            if not it.get("category"):
-                src = (it.get("meta", {}) or {}).get("source", "")
-                s = str(src)
-                if "FAQ" in s.upper():
-                    it["category"] = "과실비율/FAQ"
-                elif "용어해설" in s or "용어 해설" in s:
-                    it["category"] = "과실비율/용어해설"
-                else:
-                    it["category"] = "보험용어"
-        # filter by q/cat
+        data = _load_glossary_json()
         def _match(it):
             if q:
-                txt = " ".join([str(it.get("term","")), str(it.get("short_def","")), str(it.get("long_def","")), " ".join(map(str, it.get("aliases",[]) or []))]).lower()
+                txt = " ".join([
+                    str(it.get("term","")),
+                    str(it.get("short_def","")),
+                    str(it.get("long_def","")),
+                    " ".join(map(str, it.get("aliases",[]) or []))
+                ]).lower()
                 if q.lower() not in txt:
                     return False
             if cat and str(it.get("category","")).strip() != cat:
@@ -857,33 +876,31 @@ def glossary(request: HttpRequest) -> HttpResponse:
             "term": it.get("term") or it.get("title") or "",
             "short_def": it.get("short_def") or it.get("short") or it.get("desc") or "",
             "long_def": it.get("long_def") or it.get("long") or it.get("description") or "",
-            "category": it.get("category") or "",
+            "category": it.get("category") if it.get("category") in ALLOWED_CATS else "보험용어",
             "aliases": it.get("aliases") or [],
             "related": it.get("related") or [],
             "meta": it.get("meta") or {},
             "updated_at": "",
-        } for it in json_terms if _match(it)]
+        } for it in data if _match(it)]
 
-    # 3) Build category list (stable order if possible)
-    all_cats = []
-    seen = set()
-    preferred = ["보험용어", "과실비율/용어해설", "과실비율/FAQ"]
-    for c in preferred + sorted({t.get("category","") for t in terms_payload}):
-        c = str(c).strip()
-        if c and c not in seen:
-            seen.add(c)
-            all_cats.append(c)
+    categories = ALLOWED_CATS[:]
 
-    ctx = {"terms": terms_payload, "categories": all_cats, "q": q, "cat": cat}
+    page_obj = _paginate(request, terms_payload, per_page=30)
+    ctx = {
+        "terms": page_obj.object_list,
+        "page_obj": page_obj,
+        "categories": categories,
+        "q": q,
+        "cat": cat
+    }
     try:
         return render(request, "insurance_portal/glossary.html", ctx)
     except TemplateDoesNotExist:
         try:
             return render(request, "insurance_app/glossary.html", ctx)
         except TemplateDoesNotExist:
-            # Minimal fallback
             html = ["<h2>용어 사전</h2><ul>"]
-            for t in terms_payload[:500]:
+            for t in page_obj.object_list:
                 html.append(f"<li><b>{t['term']}</b> — {t.get('short_def','')}</li>")
             html.append("</ul>")
             return HttpResponse("\n".join(html))
