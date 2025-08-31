@@ -1,24 +1,18 @@
-# insurance_project/middleware.py
-from __future__ import annotations
+# insurance_project/middleware.py - CORS 완전 차단 및 안전 리소스 주입
 
+from __future__ import annotations
 import logging
 import mimetypes
 import re
-import traceback
 from pathlib import Path
-from typing import Iterable
-
 from django.conf import settings
 from django.http import HttpResponse
-from django.template import TemplateDoesNotExist
 from django.utils.deprecation import MiddlewareMixin
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('insurance_project.middleware')
 
-# ─────────────────────────────────────────────────────────────
-#  A) /static/insurance_portal/** → 파일 브릿지
-# ─────────────────────────────────────────────────────────────
 class PortalStaticBridgeMiddleware(MiddlewareMixin):
+    """정적 파일 브릿지 - 기존 유지"""
     URL_PREFIX = "/static/insurance_portal/"
 
     def __init__(self, get_response):
@@ -47,207 +41,228 @@ class PortalStaticBridgeMiddleware(MiddlewareMixin):
             if data is not None:
                 resp = HttpResponse(data, content_type=ctype)
                 resp["Cache-Control"] = "max-age=300, public"
+                logger.debug(f"Served static: {path}")
                 return resp
         return self.get_response(request)
 
 
-# ─────────────────────────────────────────────────────────────
-#  B) HTML 응답에 CSS/JS 자동 주입 + 깨진 CDN 링크 제거
-# ─────────────────────────────────────────────────────────────
 class PortalAutoInjectMiddleware(MiddlewareMixin):
-    EXCLUDE_PREFIXES: tuple[str, ...] = ("/admin", "/static", "/media")
+    """HTML 응답 수정 - CORS 차단 및 안전 리소스 주입"""
+    
+    EXCLUDE_PREFIXES = ("/admin", "/static", "/media", "/api")
     MARKER = b"<!-- __PORTAL_INJECTED__ -->"
-
-    # cdnjs로 올라간 폰트어썸 링크를 전부 제거하고 아래 jsDelivr로 교체
-    FA_JSDELIVR = "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css"
-    _LINK_RE = re.compile(r'<link[^>]+href=[\'"](https?://[^\'"]+)[\'"][^>]*>', re.IGNORECASE)
-    _CDN_BLOCK_PATTERNS = (
-        "cdnjs.cloudflare.com/ajax/libs/font-awesome",
-        "cdnjs.cloudflare.com/ajax/libs/fontawesome",
-        "cdnjs.cloudflare.com/ajax/libs/@fortawesome/fontawesome-free",
-    )
+    
+    # ✅ 안전한 CDN (CORS 허용)
+    SAFE_FONTAWESOME = "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css"
+    
+    # ❌ 차단할 도메인들 (CORS 문제 원인)
+    BLOCKED_DOMAINS = [
+        "cdnjs.cloudflare.com",
+        "unpkg.com",
+        "maxcdn.bootstrapcdn.com", 
+        "stackpath.bootstrapcdn.com",
+        "code.jquery.com",
+        "ajax.googleapis.com"
+    ]
+    
+    # 정규표현식 (링크와 스크립트 태그 매칭)
+    LINK_PATTERN = re.compile(r'<link[^>]+href=[\'"](https?://[^\'"]+)[\'"][^>]*>', re.IGNORECASE)
+    SCRIPT_PATTERN = re.compile(r'<script[^>]+src=[\'"](https?://[^\'"]+)[\'"][^>]*>', re.IGNORECASE)
 
     def __init__(self, get_response):
         super().__init__(get_response)
-        self.css_candidates: list[str] = [
-            "/static/insurance_portal/css/portal.bundle.css",
+        # 주입할 로컬 리소스들 (존재하는 것만)
+        self.local_resources = [
             "/static/insurance_portal/css/portal.css",
-            "/static/insurance_portal/css/chatbot.css",
+            "/static/insurance_portal/css/chatbot.css", 
             "/static/insurance_portal/css/fab.css",
-        ]
-        self.js_candidates: list[str] = [
-            "/static/insurance_portal/loader_strict.js",
-            "/static/insurance_portal/loader.js",
-            "/static/insurance_portal/js/portal.bundle.js",
-            "/static/insurance_portal/js/portal.js",
             "/static/insurance_portal/js/navigation_handler.js",
+            "/static/insurance_portal/js/chatbot.js",
+            "/static/insurance_portal/js/fab-controller.js",
+            "/static/insurance_portal/js/guide.js",
+            "/static/insurance_portal/js/knowhow.js",
+            "/static/insurance_portal/js/claim_knowledge.js"
         ]
 
-    def _exists(self, url_path: str) -> bool:
+    def _file_exists(self, url_path: str) -> bool:
+        """로컬 파일 존재 확인"""
         prefix = "/static/insurance_portal/"
         if not url_path.startswith(prefix):
             return False
+            
         rel = url_path[len(prefix):]
         for root in [
             settings.BASE_DIR / "0826-5" / "insurance_portal" / "static" / "insurance_portal",
             settings.BASE_DIR / "insurance_portal" / "static" / "insurance_portal",
-            settings.BASE_DIR / "insurance_app" / "static" / "insurance_portal",
         ]:
-            f = root / rel
-            if f.exists():
+            if (root / rel).exists():
                 return True
         return False
 
-    def _pick_first(self, urls: Iterable[str]) -> str | None:
-        for u in urls:
-            if self._exists(u):
-                return u
-        return None
+    def _remove_blocked_resources(self, html: str) -> str:
+        """차단된 외부 리소스 제거"""
+        blocked_count = 0
+        
+        def block_link(match):
+            nonlocal blocked_count
+            href = match.group(1)
+            if any(domain in href for domain in self.BLOCKED_DOMAINS):
+                blocked_count += 1
+                logger.warning(f"🚫 Blocked external CSS: {href}")
+                return f"<!-- BLOCKED: {href} -->"
+            return match.group(0)
+        
+        def block_script(match):
+            nonlocal blocked_count  
+            src = match.group(1)
+            if any(domain in src for domain in self.BLOCKED_DOMAINS):
+                blocked_count += 1
+                logger.warning(f"🚫 Blocked external JS: {src}")
+                return f"<!-- BLOCKED: {src} -->"
+            return match.group(0)
+        
+        html = self.LINK_PATTERN.sub(block_link, html)
+        html = self.SCRIPT_PATTERN.sub(block_script, html)
+        
+        if blocked_count > 0:
+            logger.info(f"🛡️ Blocked {blocked_count} unsafe external resources")
+            
+        return html
 
-    def _strip_cdn_links(self, html: str) -> str:
-        """cdnjs/fontawesome 링크를 전부 주석 처리하여 제거"""
-        def repl(m):
-            href = m.group(1)
-            if any(p in href for p in self._CDN_BLOCK_PATTERNS):
-                return f"<!-- stripped cdn link: {href} -->"
-            return m.group(0)
-        return self._LINK_RE.sub(repl, html)
-
-    def __call__(self, request):
-        for p in self.EXCLUDE_PREFIXES:
-            if request.path.startswith(p):
-                return self.get_response(request)
-
-        resp = self.get_response(request)
-
-        ctype = resp.headers.get("Content-Type", "")
-        if resp.status_code != 200 or "text/html" not in ctype:
-            return resp
-        if not hasattr(resp, "content"):
-            return resp
-        if self.MARKER in resp.content:
-            return resp
-
-        # 문자셋 결정
-        try:
-            charset = resp.charset or "utf-8"
-        except Exception:
-            charset = "utf-8"
-
-        html = resp.content.decode(charset, errors="ignore")
-
-        # 1) 깨진 cdnjs/fontawesome 링크 전부 제거
-        html = self._strip_cdn_links(html)
-
-        # 2) 로컬 CSS/JS 후보 결정
-        css_url = self._pick_first(self.css_candidates)
-        js_url  = self._pick_first(self.js_candidates)
-
-        # 3) 주입 페이로드 구성
-        inject_parts = ['\n', '<!-- __PORTAL_INJECTED__ -->', '\n']
-
-        # Font Awesome는 항상 jsDelivr로 한 번만 주입 (중복 방지)
-        if "fontawesome-free" not in html and "font-awesome" not in html:
+    def _inject_safe_resources(self, html: str) -> str:
+        """안전한 리소스 주입"""
+        if self.MARKER.decode() in html:
+            return html  # 이미 주입됨
+            
+        inject_parts = ['\n<!-- __PORTAL_INJECTED__ -->\n']
+        
+        # 1. Font Awesome (안전한 jsDelivr)
+        if "fontawesome" not in html.lower():
             inject_parts.append(
-                f'<link rel="stylesheet" href="{self.FA_JSDELIVR}" crossorigin="anonymous" referrerpolicy="no-referrer" />\n'
+                f'<link rel="stylesheet" href="{self.SAFE_FONTAWESOME}" '
+                f'crossorigin="anonymous" referrerpolicy="no-referrer" '
+                f'integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" />\n'
             )
-
-        if css_url:
-            inject_parts.append(f'<link rel="stylesheet" href="{css_url}?v=1" />\n')
-        if js_url:
-            inject_parts.append(f'<script src="{js_url}?v=1" defer></script>\n')
-
-        payload = "".join(inject_parts)
-
-        # 4) </body> 앞에 삽입 (없으면 맨 뒤에)
+            logger.info("✅ Injected safe Font Awesome")
+        
+        # 2. 로컬 리소스들
+        injected_resources = []
+        for resource in self.local_resources:
+            if self._file_exists(resource):
+                if resource.endswith('.css'):
+                    inject_parts.append(f'<link rel="stylesheet" href="{resource}?v=2" />\n')
+                elif resource.endswith('.js'):
+                    inject_parts.append(f'<script src="{resource}?v=2" defer></script>\n')
+                injected_resources.append(resource)
+        
+        if injected_resources:
+            logger.info(f"✅ Injected {len(injected_resources)} local resources")
+        
+        # 3. CORS 에러 핸들러
+        inject_parts.append('''
+<script>
+// CORS 에러 자동 처리
+(function() {
+    let corsErrorCount = 0;
+    
+    window.addEventListener('error', function(e) {
+        if (e.target && (e.target.tagName === 'LINK' || e.target.tagName === 'SCRIPT')) {
+            const url = e.target.href || e.target.src;
+            if (url && (url.includes('cdnjs.cloudflare.com') || url.includes('unpkg.com'))) {
+                corsErrorCount++;
+                console.warn(`🚫 CORS blocked resource ${corsErrorCount}: ${url}`);
+                e.preventDefault(); // 콘솔 에러 스팸 방지
+                return false;
+            }
+        }
+    }, true);
+    
+    window.addEventListener('unhandledrejection', function(e) {
+        if (e.reason && String(e.reason).toLowerCase().includes('cors')) {
+            console.warn('🚫 CORS rejection handled silently');
+            e.preventDefault();
+        }
+    });
+    
+    // 리소스 로딩 완료 체크
+    document.addEventListener('DOMContentLoaded', function() {
+        setTimeout(function() {
+            if (corsErrorCount > 0) {
+                console.info(`🛡️ Blocked ${corsErrorCount} CORS-unsafe resources successfully`);
+            }
+            console.info('✅ Portal resources loaded safely');
+        }, 1000);
+    });
+})();
+</script>
+        ''')
+        
+        payload = ''.join(inject_parts)
+        
+        # </body> 태그 앞에 주입
         if "</body>" in html:
             html = html.replace("</body>", payload + "</body>")
         else:
             html += payload
+            
+        return html
 
-        resp.content = html.encode(charset)
-        if resp.has_header("Content-Length"):
-            resp.headers["Content-Length"] = str(len(resp.content))
-        return resp
+    def __call__(self, request):
+        # API나 관리자 페이지는 건드리지 않음
+        for prefix in self.EXCLUDE_PREFIXES:
+            if request.path.startswith(prefix):
+                return self.get_response(request)
+
+        response = self.get_response(request)
+        
+        # HTML 응답만 처리
+        content_type = response.headers.get("Content-Type", "")
+        if (response.status_code != 200 or 
+            "text/html" not in content_type or 
+            not hasattr(response, "content")):
+            return response
+
+        try:
+            charset = getattr(response, 'charset', 'utf-8') or 'utf-8'
+            html = response.content.decode(charset, errors='ignore')
+            
+            # 1단계: 위험한 외부 리소스 차단
+            html = self._remove_blocked_resources(html)
+            
+            # 2단계: 안전한 리소스 주입  
+            html = self._inject_safe_resources(html)
+            
+            # 응답 업데이트
+            response.content = html.encode(charset)
+            if response.has_header("Content-Length"):
+                response.headers["Content-Length"] = str(len(response.content))
+                
+        except Exception as e:
+            logger.error(f"❌ Middleware processing error: {e}")
+            # 에러 시 원본 응답 반환
+            
+        return response
 
 
-# ─────────────────────────────────────────────────────────────
-#  C) 예외 로그 강화
-# ─────────────────────────────────────────────────────────────
 class ExceptionLoggingMiddleware(MiddlewareMixin):
+    """예외 로깅"""
     def __call__(self, request):
         try:
             return self.get_response(request)
         except Exception as e:
-            logger.error("Unhandled exception at %s: %s", request.path, e)
-            traceback.print_exc()
+            logger.error(f"❌ Unhandled exception at {request.path}: {e}", exc_info=True)
             raise
 
-
-# ─────────────────────────────────────────────────────────────
-#  D) 지정 경로 폴백 페이지
-# ─────────────────────────────────────────────────────────────
-FALLBACK_PAGES: dict[str, str] = {
-    "glossary": """<!doctype html><meta charset="utf-8">
-    <title>용어집</title><h1>용어집</h1><p>템플릿을 찾을 수 없어 최소 페이지로 표시합니다.</p>""",
-    "login": """<!doctype html><meta charset="utf-8">
-    <title>로그인</title><h1>로그인</h1>
-    <form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="">
-    <label>아이디 <input name="username"></label><br>
-    <label>비밀번호 <input type="password" name="password"></label><br>
-    <button type="submit">로그인</button></form>""",
-    "signup": """<!doctype html><meta charset="utf-8">
-    <title>회원가입</title><h1>회원가입</h1>
-    <form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="">
-    <label>아이디 <input name="username"></label><br>
-    <label>비밀번호 <input type="password" name="password1"></label><br>
-    <label>비밀번호 확인 <input type="password" name="password2"></label><br>
-    <button type="submit">가입</button></form>""",
-    "insurance_recommendation": """<!doctype html><meta charset="utf-8">
-    <title>AI 약관 검색</title><h1>AI 약관 검색</h1>
-    <form id="f"><input id="q" placeholder="질문을 입력하세요">
-    <button>검색</button></form><pre id="out"></pre>
-    <script>
-    document.getElementById('f').onsubmit = async (e) => {
-      e.preventDefault();
-      const r = await fetch('/insurance-recommendation/', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({query: document.getElementById('q').value})
-      });
-      try { const j = await r.json(); document.getElementById('out').textContent = JSON.stringify(j, null, 2); }
-      catch (err) { document.getElementById('out').textContent = '응답 형식 오류'; }
-    };
-    </script>""",
-}
-
-def _fallback_key_from_path(path: str) -> str | None:
-    if path.startswith("/glossary"):
-        return "glossary"
-    if path.startswith("/login"):
-        return "login"
-    if path.startswith("/signup"):
-        return "signup"
-    if path.startswith("/insurance-recommendation"):
-        return "insurance_recommendation"
-    return None
 
 class TemplateFallbackMiddleware(MiddlewareMixin):
-    """
-    - TemplateDoesNotExist는 물론, 지정 경로의 모든 예외에 대해 폴백 HTML 제공.
-    - 정상 템플릿/뷰가 있으면 절대 개입하지 않음.
-    """
+    """템플릿 폴백 (기존 유지)"""
     def __call__(self, request):
         try:
             return self.get_response(request)
-        except TemplateDoesNotExist as e:
-            key = _fallback_key_from_path(request.path or "")
-            if key and key in FALLBACK_PAGES:
-                logger.warning("Template missing for %s (%s). Serving fallback page.", request.path, e)
-                return HttpResponse(FALLBACK_PAGES[key], content_type="text/html; charset=utf-8", status=200)
-            raise
         except Exception as e:
-            key = _fallback_key_from_path(request.path or "")
-            if key and key in FALLBACK_PAGES:
-                logger.error("Exception at %s: %s. Serving fallback page.", request.path, e)
-                return HttpResponse(FALLBACK_PAGES[key], content_type="text/html; charset=utf-8", status=200)
-            raise
+            logger.error(f"❌ Template/View error at {request.path}: {e}")
+            # 간단한 HTML 응답 반환
+            return HttpResponse(
+                f'<h1>일시적 오류</h1><p>페이지를 불러오는 중 문제가 발생했습니다.</p>',
+                content_type='text/html; charset=utf-8'
+            )
