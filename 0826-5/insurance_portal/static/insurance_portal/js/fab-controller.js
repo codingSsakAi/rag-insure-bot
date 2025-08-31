@@ -1,6 +1,11 @@
 /**
  * 플로팅 액션 버튼 컨트롤러
  * 스크롤 추적, 확장/수축, 상태 관리
+ * 
+ * 변경 요약(최소 변경):
+ * - ensureFabCss(): 아카이브 CSS 자동 로드
+ * - ensureFabMarkup(): #floating-fab 마크업 없을 때 자동 생성(기존 구조/ID 유지)
+ * - hideHamburger(): 3선 토글(UI/이벤트) 완전 비표시 + MutationObserver 보강
  */
 
 class FloatingFABController {
@@ -18,8 +23,134 @@ class FloatingFABController {
     this.init();
   }
 
+  // [추가] 아카이브 CSS 보장
+  ensureFabCss() {
+    try {
+      const href = "/0826-5/insurance_portal/static/insurance_portal/css/fab.css";
+      if (!document.querySelector(`link[href*="${href}"]`)) {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = href;
+        document.head.appendChild(link);
+      }
+      // 선택: 햄버거 차단 보루 CSS(있으면 로드)
+      const killHref = "/0826-5/insurance_portal/static/insurance_portal/css/hamburger-off.css";
+      if (window.__LOAD_HAMBURGER_OFF_CSS__ && !document.querySelector(`link[href*="${killHref}"]`)) {
+        const link2 = document.createElement("link");
+        link2.rel = "stylesheet";
+        link2.href = killHref;
+        document.head.appendChild(link2);
+      }
+    } catch (_) {}
+  }
+
+  // [추가] FAB 마크업 보장(없으면 생성) – 기존 ID/클래스 그대로 사용
+  ensureFabMarkup() {
+    try {
+      if (document.getElementById('floating-fab')) return; // 이미 있으면 그대로 사용
+
+      const container = document.createElement('div');
+      container.id = 'floating-fab';
+      container.className = 'floating-fab';
+      container.innerHTML = `
+        <button id="fab-main-toggle" class="fab-main-toggle" aria-label="메뉴 열기" aria-expanded="false">+</button>
+        <ul id="fab-sub-actions" class="fab-sub-actions" aria-hidden="true">
+          <li class="fab-action-item" data-action="guide">
+            <button class="fab-sub-btn" type="button" aria-pressed="false">가이드</button>
+            <span class="fab-label">사고 가이드</span>
+          </li>
+          <li class="fab-action-item" data-action="knowhow">
+            <button class="fab-sub-btn" type="button" aria-pressed="false">상식</button>
+            <span class="fab-label">보험 상식</span>
+          </li>
+          <li class="fab-action-item" data-action="claim-knowledge">
+            <button class="fab-sub-btn" type="button" aria-pressed="false">보상</button>
+            <span class="fab-label">보상 상식</span>
+          </li>
+          <li class="fab-action-item" data-action="chatbot">
+            <button class="fab-sub-btn" type="button" aria-pressed="false">챗봇</button>
+            <span class="fab-label">과실 챗봇</span>
+          </li>
+        </ul>
+      `;
+      // body 보장 후 삽입
+      if (!document.body) {
+        document.addEventListener('DOMContentLoaded', () => document.body.appendChild(container));
+      } else {
+        document.body.appendChild(container);
+      }
+    } catch (_) {}
+  }
+
+  // [추가] 3선 토글 완전 제거(표시/이벤트 모두) + 동적 삽입 대응
+  hideHamburger() {
+    const KILL_STYLE_ID = "hamburger-off-style";
+    if (!document.getElementById(KILL_STYLE_ID)) {
+      const st = document.createElement("style");
+      st.id = KILL_STYLE_ID;
+      st.textContent = `
+        .hamburger, .hamburger-menu, .menu-toggle, .nav-drawer,
+        #hamburger, #menuToggle, #navDrawer {
+          display: none !important;
+          visibility: hidden !important;
+          pointer-events: none !important;
+          opacity: 0 !important;
+          width: 0 !important; height: 0 !important;
+          position: absolute !important; left: -99999px !important; top: -99999px !important;
+        }
+      `;
+      document.head.appendChild(st);
+    }
+
+    const killOnce = () => {
+      const selectors = [
+        ".hamburger", ".hamburger-menu", ".menu-toggle", ".nav-drawer",
+        "#hamburger", "#menuToggle", "#navDrawer"
+      ];
+      document.querySelectorAll(selectors.join(",")).forEach(el => {
+        try {
+          el.style.display = "none";
+          el.style.visibility = "hidden";
+          el.style.pointerEvents = "none";
+          el.setAttribute("aria-hidden", "true");
+          const clone = el.cloneNode(true);
+          el.parentNode && el.parentNode.replaceChild(clone, el);
+        } catch (_) {}
+      });
+      document.body && document.body.classList.remove("drawer-open","menu-open","nav-open","is-open","open");
+    };
+
+    killOnce();
+
+    if (!window.__HAMBURGER_OBSERVING__) {
+      window.__HAMBURGER_OBSERVING__ = true;
+      const mo = new MutationObserver(muts => {
+        let found = false;
+        for (const m of muts) {
+          if (m.addedNodes && m.addedNodes.length) {
+            for (const n of m.addedNodes) {
+              if (!(n instanceof Element)) continue;
+              if (
+                n.matches?.(".hamburger, .hamburger-menu, .menu-toggle, .nav-drawer, #hamburger, #menuToggle, #navDrawer") ||
+                n.querySelector?.(".hamburger, .hamburger-menu, .menu-toggle, .nav-drawer, #hamburger, #menuToggle, #navDrawer")
+              ) { found = true; break; }
+            }
+          }
+          if (found) break;
+        }
+        if (found) killOnce();
+      });
+      mo.observe(document.documentElement, { childList: true, subtree: true });
+    }
+  }
+
   init() {
     try {
+      // [추가] CSS/마크업/햄버거 제거 보장
+      this.ensureFabCss();
+      this.ensureFabMarkup();
+      this.hideHamburger();
+
       // DOM 요소 찾기
       this.fabContainer = document.getElementById('floating-fab');
       this.mainToggle = document.getElementById('fab-main-toggle');
@@ -247,7 +378,6 @@ class FloatingFABController {
       this.handleError(error, 'collapseActions');
     }
   }
-
 
   handleActionClick(action, itemElement) {
     try {
@@ -539,7 +669,7 @@ class FloatingFABController {
         return;
         }
         // 폴백: 직접 모달 표시 (커스텀 모달)
-        const el = document.getElementById('knowhow-modal'); // <-- 하이픈 ID로 수정
+        const el = document.getElementById('knowhow-modal'); // <-- 하이픈 ID
         if (el) {
         el.removeAttribute('hidden');
         requestAnimationFrame(() => el.classList.add('show'));
