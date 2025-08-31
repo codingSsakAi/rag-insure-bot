@@ -51,3 +51,4 @@
 .ip-item a:hover { border-color: var(--ip-border); background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.03)); }
 .ip-item .ip-sub { font-size: 12px; color: var(--ip-muted); }
 .ip-item .ip-icon { width: 28px; height: 28px; display:inline-flex; align-items:center; justify-content:center; border-radius:8px; background:#0b1220; }
+#ip-fallback { display: none !important; }
