@@ -113,8 +113,8 @@ if settings.DEBUG:
 # 에러 페이지 핸들러
 # ============================================================================
 
-handler404 = 'insurance_portal.views.custom_404'
-handler500 = 'insurance_portal.views.custom_500'
+# handler404 = 'insurance_portal.views.custom_404'
+# handler500 = 'insurance_portal.views.custom_500'
 
 print(f"✅ URLs configured - {len(urlpatterns)} patterns")
 print(f"✅ Debug mode: {settings.DEBUG}")
