@@ -1,129 +1,120 @@
-/* eslint-disable no-console */
-(function () {
-  const LOG_PREFIX = "[portal-loader]";
-  const quiet = false; // 필요시 true로 바꿔 콘솔 출력 최소화
+// insurance_portal/static/insurance_portal/loader_strict.js
+(() => {
+  const DEBUG = true;
+  const log  = (...a) => { if (DEBUG) console.log('[portal-loader]', ...a); };
+  const warn = (...a) => console.warn('[portal-loader]', ...a);
 
-  const log = (...args) => !quiet && console.log(LOG_PREFIX, ...args);
-  const warn = (...args) => !quiet && console.warn(LOG_PREFIX, ...args);
-  const err = (...args) => !quiet && console.error(LOG_PREFIX, ...args);
+  function addCss(href, id) {
+    return new Promise((resolve, reject) => {
+      const el = document.createElement('link');
+      el.rel = 'stylesheet';
+      el.href = href;
+      el.crossOrigin = 'anonymous'; // 폰트 CORS 대응
+      if (id) el.id = id;
+      el.onload = () => resolve({ ok: true, href });
+      el.onerror = () => reject(new Error('css load failed: ' + href));
+      document.head.appendChild(el);
+    });
+  }
 
-  // ─────────────────────────────────────────────────────────
-  // 설정: 최소한의 후보만 사용 (불필요한 404 소음 제거)
-  // ─────────────────────────────────────────────────────────
-  const PORTAL_CSS_CANDIDATES = [
-    "/static/insurance_portal/css/portal.css",
-    "/static/insurance_portal/portal.css",
-  ];
+  function addJs(src) {
+    return new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = src;
+      el.defer = true;
+      el.onload = () => resolve({ ok: true, src });
+      el.onerror = () => reject(new Error('js load failed: ' + src));
+      document.head.appendChild(el);
+    });
+  }
 
-  const PORTAL_JS_CANDIDATES = [
-    "/static/insurance_portal/js/portal.js",
-    "/static/insurance_portal/portal.js",
-  ];
-
-  // Font Awesome 로컬 경로 (아카이브에 포함되어 있어야 함)
-  const LOCAL_FA_CSS = "/static/insurance_portal/vendor/fontawesome/css/all.min.css";
-
-  // cdnjs/jsdelivr 경로(깨지는 링크) 감지용
-  const CDN_FA_REGEX = /https?:\/\/(?:cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net)[^"']*(?:font-?awesome|\/all(?:\.min)?\.css)/i;
-
-  // ─────────────────────────────────────────────────────────
-  // util: HEAD로 존재 확인 (동일 오리진만)
-  // ─────────────────────────────────────────────────────────
-  async function probe(url) {
+  // 동기 HEAD(동일 오리진만)로 존재 확인 → 404 폭주 방지
+  function existsLocal(path) {
     try {
-      const res = await fetch(url, { method: "HEAD", cache: "no-store" });
-      return res.ok;
-    } catch {
+      const xhr = new XMLHttpRequest();
+      xhr.open('HEAD', path, false);
+      xhr.send(null);
+      return xhr.status >= 200 && xhr.status < 400;
+    } catch (e) {
       return false;
     }
   }
 
-  function injectLink(href) {
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = `${href}?v=1`;
-    document.head.appendChild(link);
-    return link;
+  // ✅ 실제 아카이브 구조에 맞춘 후보
+  const CSS_CANDIDATES = [
+    '/static/insurance_portal/css/portal.bundle.css',
+    '/static/insurance_portal/css/portal.css',
+    '/static/insurance_portal/portal.css',
+  ];
+  const JS_CANDIDATES = [
+    '/static/insurance_portal/js/portal.bundle.js',
+    '/static/insurance_portal/js/portal.js',
+    '/static/insurance_portal/portal.js',
+  ];
+
+  // Font Awesome
+  const FA_LOCAL = '/static/insurance_portal/vendor/fontawesome/css/all.min.css';
+  const FA_CDN_FALLBACKS = [
+    'https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css',
+    'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css',
+    'https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@5.15.4/css/all.min.css',
+    'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css',
+  ];
+
+  function hasFontAwesomeLink() {
+    return Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+      .some(l => /fontawesome|font-awesome|all\.min\.css/i.test(l.href));
   }
 
-  function injectScript(src) {
-    return new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = `${src}?v=1`;
-      s.defer = true;
-      s.onload = resolve;
-      s.onerror = () => reject(new Error(`Fail ${src}`));
-      document.head.appendChild(s);
-    });
-  }
+  async function ensurePortalAssets() {
+    const needCss = !document.querySelector(
+      'link[href*="portal.bundle.css"],link[href$="/portal.css"],link#portal-css'
+    );
+    const needJs = !document.querySelector(
+      'script[src*="portal.bundle.js"],script[src$="/portal.js"]'
+    );
 
-  // ─────────────────────────────────────────────────────────
-  // 1) 깨진 CDN Font Awesome <link> 제거
-  // ─────────────────────────────────────────────────────────
-  function stripBrokenCDNFA() {
-    const links = Array.from(document.querySelectorAll('link[rel="stylesheet"][href]'));
-    let removed = 0;
-    for (const el of links) {
-      const href = el.getAttribute("href") || "";
-      if (CDN_FA_REGEX.test(href)) {
-        el.parentNode && el.parentNode.removeChild(el);
-        removed++;
-        warn("removed external Font Awesome link:", href);
+    if (needCss) {
+      for (const href of CSS_CANDIDATES) {
+        if (href.startsWith('/static/') && existsLocal(href)) {
+          try { await addCss(href, 'portal-css'); log('css loaded', href); break; }
+          catch (e) { warn('css failed', href, e); }
+        }
       }
     }
-    return removed;
-  }
-
-  // 이미 Font Awesome가 있는지 대략 체크
-  function hasLocalFA() {
-    const links = Array.from(document.querySelectorAll('link[rel="stylesheet"][href]'));
-    return links.some((el) => (el.getAttribute("href") || "").includes("vendor/fontawesome"));
-  }
-
-  // ─────────────────────────────────────────────────────────
-  // 2) 최소한의 CSS/JS만 로드(존재하는 것만)
-  // ─────────────────────────────────────────────────────────
-  async function smartLoad() {
-    // Font Awesome CDN 링크 제거 → 없으면 로컬 주입
-    const removed = stripBrokenCDNFA();
-    if (!hasLocalFA()) {
-      const ok = await probe(LOCAL_FA_CSS);
-      if (ok) {
-        injectLink(LOCAL_FA_CSS);
-        log("local FA injected:", LOCAL_FA_CSS);
-      } else if (removed) {
-        warn("local FA missing:", LOCAL_FA_CSS);
-      }
-    }
-
-    // Portal CSS
-    for (const u of PORTAL_CSS_CANDIDATES) {
-      if (await probe(u)) {
-        injectLink(u);
-        log("CSS", u);
-        break; // 첫 성공만
-      }
-    }
-
-    // Portal JS
-    for (const u of PORTAL_JS_CANDIDATES) {
-      if (await probe(u)) {
-        try {
-          await injectScript(u);
-          log("JS", u);
-          break; // 첫 성공만
-        } catch (e) {
-          err("JS load failed:", u, e);
+    if (needJs) {
+      for (const src of JS_CANDIDATES) {
+        if (src.startsWith('/static/') && existsLocal(src)) {
+          try { await addJs(src); log('js loaded', src); break; }
+          catch (e) { warn('js failed', src, e); }
         }
       }
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  // Bootstrap
-  // ─────────────────────────────────────────────────────────
-  document.addEventListener("DOMContentLoaded", () => {
-    log("bootstrap");
-    smartLoad().catch((e) => err("bootstrap failed:", e));
-  });
+  async function ensureFontAwesome() {
+    // 기존 CDN 링크가 있으면 그대로 둔다(더 이상 제거하지 않음)
+    if (hasFontAwesomeLink()) return;
+
+    // 1) 로컬 벤더가 있으면 우선
+    if (existsLocal(FA_LOCAL)) {
+      try { await addCss(FA_LOCAL, 'fa-css'); log('Font Awesome (local) loaded'); return; }
+      catch (e) { warn('local FA failed', e); }
+    }
+    // 2) CDN 후보 주입 (HEAD 프리플라이트 없이 바로 주입)
+    for (const cdn of FA_CDN_FALLBACKS) {
+      try { await addCss(cdn, 'fa-css'); log('Font Awesome (CDN) loaded', cdn); return; }
+      catch (e) { warn('CDN FA failed', cdn, e); }
+    }
+    warn('Font Awesome could not be loaded from any source');
+  }
+
+  (async function bootstrap() {
+    try {
+      await ensurePortalAssets();
+      await ensureFontAwesome();
+    } catch (e) {
+      warn('bootstrap error', e);
+    }
+  })();
 })();
