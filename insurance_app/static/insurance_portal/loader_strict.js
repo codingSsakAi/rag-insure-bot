@@ -1,90 +1,81 @@
-// insurance_app/static/insurance_portal/loader_strict.js
-// ✅ 원본(0826-5/insurance_portal/static/insurance_portal)의 CSS/JS만 "로드"
-// ✅ 어떤 메뉴 구성도 주입 안 함(원본 그대로)
-// ✅ ESM(type="module") 가능성까지 고려해 로드
+// insurance_portal/loader_strict.js
+(function () {
+  if (window.__PORTAL_LOADER__) return;
+  window.__PORTAL_LOADER__ = true;
 
-(function(){
-  const ROOT = "/static/insurance_portal/";
-  const CSS_CANDIDATES = [
-    ROOT + "css/portal.css",          // ✓ 로그에 200 찍히던 경로
-  ];
-  const JS_CANDIDATES = [
-    ROOT + "js/portal.js",            // ✓ 로그에 200 찍히던 경로
-  ];
+  const log = (...a) => console.log("[portal-loader]", ...a);
 
-  function injectCSS(href){
-    return new Promise((resolve,reject)=>{
-      const link = document.createElement("link");
-      link.rel = "stylesheet";
-      link.href = href;
-      link.onload = ()=>resolve(href);
-      link.onerror = ()=>reject(new Error("CSS load fail: "+href));
-      document.head.appendChild(link);
-    });
-  }
+  const q = (sel) => document.querySelector(sel);
 
-  function injectJS(src, asModule=false){
-    return new Promise((resolve,reject)=>{
-      const s = document.createElement("script");
-      if(asModule) s.type = "module";
-      s.src = src;
-      s.async = true;
-      s.onload = ()=>resolve({src, asModule});
-      s.onerror = ()=>reject(new Error("JS load fail: "+src+(asModule?" (module)":"")));
-      document.head.appendChild(s);
-    });
-  }
+  const addLink = (href, attrs = {}) => {
+    if (q(`link[rel="stylesheet"][href="${href}"]`)) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    Object.entries(attrs).forEach(([k, v]) => link.setAttribute(k, v));
+    document.head.appendChild(link);
+  };
 
-  async function firstOK(urls, loader){
-    for(const u of urls){
-      try{ await loader(u); return u; }catch(e){}
+  const addScript = (src, attrs = {}) => {
+    if (q(`script[src="${src}"]`)) return;
+    const s = document.createElement("script");
+    s.src = src;
+    s.defer = true;
+    Object.entries(attrs).forEach(([k, v]) => s.setAttribute(k, v));
+    document.head.appendChild(s);
+  };
+
+  const headOK = (url) =>
+    fetch(url, { method: "HEAD" })
+      .then((r) => r.ok)
+      .catch(() => false);
+
+  const ensureLocal = async (candidates, adder) => {
+    for (const url of candidates) {
+      if (!url.startsWith("/static/")) continue; // 외부는 HEAD 금지 (CORS)
+      if (await headOK(url)) {
+        adder(url);
+        return url;
+      }
     }
     return null;
-  }
+  };
 
-  function tryInitNoArg(){
-    // 원본이 제공할 법한 초기화 포인트를 "인자 없이" 호출
-    const c = (fn)=>{ try{ return fn(), true; }catch(_){ return false; } };
-    if (window.Portal?.init && c(window.Portal.init)) return true;
-    if (window.InsurancePortal?.init && c(window.InsurancePortal.init)) return true;
-    if (window.PortalMenu?.mount && c(window.PortalMenu.mount)) return true;
-    if (window.RadialMenu?.mount && c(window.RadialMenu.mount)) return true;
-    if (typeof window.initPortal === "function" && c(window.initPortal)) return true;
-    if (typeof window.initMenu === "function" && c(window.initMenu)) return true;
-    if (typeof window.createPortalMenu === "function" && c(window.createPortalMenu)) return true;
-    return false; // 엔트리포인트가 없어도, 원본이 자동 마운트면 이대로 OK
-  }
+  (async () => {
+    // 1) Font Awesome — cdnjs 금지, jsDelivr만
+    addLink(
+      "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css",
+      { crossorigin: "anonymous", referrerpolicy: "no-referrer" }
+    );
 
-  (async function boot(){
-    try{
-      // CSS 1개만(404 소음 제거)
-      await firstOK(CSS_CANDIDATES, injectCSS);
+    // 2) Portal CSS (있는 것만 조용히 로드)
+    await ensureLocal(
+      [
+        "/static/insurance_portal/css/portal.bundle.css",
+        "/static/insurance_portal/css/portal.css",
+      ],
+      (href) => addLink(href)
+    );
 
-      // JS: 먼저 module 시도 → 실패 시 nomodule 시도
-      let loaded = null;
-      try{
-        for(const u of JS_CANDIDATES){
-          await injectJS(u, true);  // type="module"
-          loaded = {u, asModule:true};
-          break;
-        }
-      }catch(e){}
-      if(!loaded){
-        for(const u of JS_CANDIDATES){
-          await injectJS(u, false); // 일반 스크립트
-          loaded = {u, asModule:false};
-          break;
-        }
-      }
+    // 보조 CSS (있으면 붙임)
+    await ensureLocal(
+      ["/static/insurance_portal/css/chatbot.css"],
+      (href) => addLink(href)
+    );
+    await ensureLocal(
+      ["/static/insurance_portal/css/fab.css"],
+      (href) => addLink(href)
+    );
 
-      // 인자 없이 초기화만 시도(원본 그대로)
-      let ok = tryInitNoArg();
-      if(!ok){
-        // 혹시 늦게 전역 노출되면 한 번 더
-        setTimeout(()=>tryInitNoArg(), 600);
-      }
-    }catch(e){
-      console.error("[portal:strict] load failed:", e);
-    }
+    // 3) JS 번들 (bundle 우선, 없으면 portal.js)
+    const picked = await ensureLocal(
+      [
+        "/static/insurance_portal/js/portal.bundle.js",
+        "/static/insurance_portal/js/portal.js",
+      ],
+      (src) => addScript(src)
+    );
+
+    log("ready", { js: picked || "none" });
   })();
 })();
