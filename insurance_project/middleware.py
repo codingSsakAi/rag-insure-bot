@@ -1,8 +1,8 @@
+# insurance_project/middleware.py
 from __future__ import annotations
 
 import mimetypes
 import logging
-import re
 import traceback
 from pathlib import Path
 from typing import Iterable
@@ -15,7 +15,7 @@ from django.template import TemplateDoesNotExist
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
-#  A) /static/insurance_portal/** → 브릿지
+#  A) /static/insurance_portal/** → 브릿지 (HEAD/GET 모두 지원)
 # ─────────────────────────────────────────────────────────────
 class PortalStaticBridgeMiddleware(MiddlewareMixin):
     URL_PREFIX = "/static/insurance_portal/"
@@ -29,83 +29,56 @@ class PortalStaticBridgeMiddleware(MiddlewareMixin):
             base / "insurance_app" / "static" / "insurance_portal",
         ]
 
-    def _try_open(self, relpath: str) -> tuple[bytes | None, str | None]:
+    def _open_file(self, relpath: str) -> tuple[Path | None, str | None]:
         for root in self.candidate_roots:
             f = root / relpath
             if f.exists() and f.is_file():
-                data = f.read_bytes()
                 ctype, _ = mimetypes.guess_type(str(f))
-                return data, ctype or "application/octet-stream"
+                return f, ctype or "application/octet-stream"
         return None, None
 
     def __call__(self, request):
         path = request.path
         if path.startswith(self.URL_PREFIX):
             rel = path[len(self.URL_PREFIX):]
-            data, ctype = self._try_open(rel)
-            if data is not None:
-                resp = HttpResponse(data, content_type=ctype)
+            fpath, ctype = self._open_file(rel)
+            if fpath is not None:
+                # HEAD는 본문 없이 헤더만
+                if request.method == "HEAD":
+                    resp = HttpResponse(b"", content_type=ctype, status=200)
+                    resp["Content-Length"] = "0"
+                else:
+                    data = fpath.read_bytes()
+                    resp = HttpResponse(data, content_type=ctype, status=200)
+                    resp["Content-Length"] = str(len(data))
                 resp["Cache-Control"] = "max-age=300, public"
                 return resp
         return self.get_response(request)
 
 
 # ─────────────────────────────────────────────────────────────
-#  B) HTML 응답 후처리: 포털 리소스 주입 + Font Awesome 링크 교정
+#  B) HTML 응답에 번들 + FontAwesome 자동 주입 (로더 의존 제거)
 # ─────────────────────────────────────────────────────────────
 class PortalAutoInjectMiddleware(MiddlewareMixin):
     EXCLUDE_PREFIXES: tuple[str, ...] = ("/admin", "/static", "/media")
     MARKER = b"<!-- __PORTAL_INJECTED__ -->"
-    FA_MARKER = "<!-- __FA_FIXED__ -->"
-
-    # 정상 CDN (검증된 버전)
-    FA_GOOD = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
-
-    # 잘못된/구버전/오타 링크들을 잡아내는 정규식들
-    RE_FA_LINKS = [
-        # cdnjs - 다양한 버전/오타(all.css, all.min.css 모두)
-        re.compile(
-            r"""<link\s+[^>]*rel=["']stylesheet["'][^>]*href=["']\s*
-            https?://cdnjs\.cloudflare\.com/ajax/libs/font-?awesome/[^"']+/css/all(?:\.min)?\.css[^"']*
-            ["'][^>]*>\s*""",
-            re.IGNORECASE | re.VERBOSE,
-        ),
-        # jsDelivr
-        re.compile(
-            r"""<link\s+[^>]*rel=["']stylesheet["'][^>]*href=["']\s*
-            https?://cdn\.jsdelivr\.net/npm/@?fortawesome/font-?awesome[^"']*
-            (?:all(?:\.min)?\.css)[^"']*
-            ["'][^>]*>\s*""",
-            re.IGNORECASE | re.VERBOSE,
-        ),
-        # use.fontawesome.com (v5/v6 kit CSS 직접 링크)
-        re.compile(
-            r"""<link\s+[^>]*rel=["']stylesheet["'][^>]*href=["']\s*
-            https?://use\.fontawesome\.com/[^"']+/(?:css|releases)/[^"']*/all(?:\.min)?\.css[^"']*
-            ["'][^>]*>\s*""",
-            re.IGNORECASE | re.VERBOSE,
-        ),
-    ]
-
-    # CSS 안의 @import 형태도 치환
-    RE_FA_IMPORT = re.compile(
-        r"""@import\s+url\(\s*["']?\s*https?://(?:cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net|use\.fontawesome\.com)[^)"']+\b(all(?:\.min)?\.css)\s*["']?\s*\)\s*;?""",
-        re.IGNORECASE | re.VERBOSE,
-    )
 
     def __init__(self, get_response):
         super().__init__(get_response)
-        # 불필요한 404 줄이도록 후보 최소화
+        # 실제 아카이브 구조 기준으로 "있는 파일만" 선택
         self.css_candidates: list[str] = [
+            "/static/insurance_portal/css/portal.bundle.css",
             "/static/insurance_portal/css/portal.css",
-            "/static/insurance_portal/portal.css",
         ]
         self.js_candidates: list[str] = [
-            "/static/insurance_portal/loader_strict.js",
-            "/static/insurance_portal/loader.js",
+            "/static/insurance_portal/js/portal.bundle.js",
             "/static/insurance_portal/js/portal.js",
-            "/static/insurance_portal/portal.js",
-            "/static/insurance_portal/js/navigation_handler.js",
+        ]
+        # Font Awesome: 로컬 → CDN(jsDelivr 6.5.2) 우선순위
+        self.fa_local = "/static/insurance_portal/vendor/fontawesome/css/all.min.css"
+        self.fa_cdn_list = [
+            "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css",
+            "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css",
         ]
 
     def _exists(self, url_path: str) -> bool:
@@ -119,90 +92,21 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
             settings.BASE_DIR / "insurance_app" / "static" / "insurance_portal",
         ]:
             f = root / rel
-            if f.exists():
+            if f.exists() and f.is_file():
                 return True
         return False
 
     def _pick_first(self, urls: Iterable[str]) -> str | None:
         for u in urls:
-            if self._exists(u):
+            if u.startswith("/static/") and self._exists(u):
                 return u
         return None
 
-    def _fix_fontawesome(self, html: str) -> tuple[str, bool]:
-        """문서 내 잘못된 FA 링크/임포트를 전부 제거·치환하고, 없으면 주입."""
-        changed = False
-
-        if self.FA_MARKER in html:
-            return html, False
-
-        # 1) @import 형태 치환
-        html2, n_imp = self.RE_FA_IMPORT.subn(f'@import url("{self.FA_GOOD}");', html)
-        if n_imp:
-            logger.warning("Replaced %d Font Awesome @import reference(s).", n_imp)
-            changed = True
-        else:
-            html2 = html
-
-        # 2) <link rel=stylesheet ...> 형태 제거 후 정상 CDN 한 번만 삽입
-        removed = 0
-        for rx in self.RE_FA_LINKS:
-            html2, n = rx.subn("", html2)
-            removed += n
-        if removed:
-            logger.warning("Removed %d broken external Font Awesome link(s).", removed)
-            changed = True
-
-        # 3) 문서에 FA가 전혀 없으면 정상 CDN 삽입
-        if ("font-awesome" not in html2.lower()) and ("all.min.css" not in html2):
-            fa_tag = (
-                f'{self.FA_MARKER}\n'
-                f'<link rel="stylesheet" href="{self.FA_GOOD}" crossorigin="anonymous" referrerpolicy="no-referrer">\n'
-            )
-            if "</head>" in html2:
-                html2 = html2.replace("</head>", fa_tag + "</head>")
-            elif "<body" in html2:
-                html2 = re.sub(r"(<body[^>]*>)", r"\1\n" + fa_tag, html2, count=1, flags=re.IGNORECASE)
-            else:
-                html2 = fa_tag + html2
-            changed = True
-
-        # 4) 안전망: 이미 잘못된 버전 숫자가 하드코딩돼 있으면 직접 치환
-        #   예: 6.5.12 → 6.5.2
-        html3, n_ver = re.subn(
-            r"(cdnjs\.cloudflare\.com/ajax/libs/font-?awesome/)(\d+\.\d+\.\d+)(/css/all(?:\.min)?\.css)",
-            r"\g<1>6.5.2\g<3>",
-            html2,
-            flags=re.IGNORECASE,
-        )
-        if n_ver:
-            logger.warning("Normalized %d Font Awesome version reference(s) to 6.5.2.", n_ver)
-            changed = True
-
-        # 5) 런타임 안전망(헤드에 짧은 스크립트): DOM 파싱 후 잘못된 링크가 있으면 비활성화하고 정상 CDN 추가
-        if self.FA_MARKER not in html3:
-            runtime_fix = (
-                "<script>(function(){"
-                "try{var bad=[];var lnks=document.querySelectorAll('link[rel=stylesheet]');"
-                "for(var i=0;i<lnks.length;i++){var h=(lnks[i].getAttribute('href')||'').toLowerCase();"
-                "if(h.indexOf('fontawesome')>-1||h.indexOf('font-awesome')>-1){"
-                "if(h.indexOf('cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css')===-1){bad.push(lnks[i]);}"
-                "}}"
-                "if(bad.length){for(var j=0;j<bad.length;j++){bad[j].disabled=true;}"
-                "var l=document.createElement('link');l.rel='stylesheet';l.href='%s';"
-                "l.crossOrigin='anonymous';l.referrerPolicy='no-referrer';document.head.appendChild(l);}"
-                "}catch(e){}"
-                "})();</script>" % self.FA_GOOD
-            )
-            if "</head>" in html3:
-                html3 = html3.replace("</head>", runtime_fix + "</head>")
-            else:
-                html3 = runtime_fix + html3
-            changed = True
-
-        return html3, changed
+    def _has_link(self, html: str, substrings: Iterable[str]) -> bool:
+        return any(s in html for s in substrings)
 
     def __call__(self, request):
+        # 정적/관리/미디어는 패스
         for p in self.EXCLUDE_PREFIXES:
             if request.path.startswith(p):
                 return self.get_response(request)
@@ -214,8 +118,13 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
             return resp
         if not hasattr(resp, "content"):
             return resp
+        if self.MARKER in resp.content:
+            return resp
 
-        # 이미 다른 주입이 있었다면 FA만 보정
+        # 주입은 GET/POST만 (HEAD는 변형 금지)
+        if request.method not in ("GET", "POST"):
+            return resp
+
         try:
             charset = resp.charset or "utf-8"
         except Exception:
@@ -223,31 +132,46 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
 
         html = resp.content.decode(charset, errors="ignore")
 
-        # Font Awesome 고장 링크 보정
-        html, fa_changed = self._fix_fontawesome(html)
+        # 이미 번들이 포함되어 있으면 스킵
+        already_has_css = self._has_link(html, ["/portal.bundle.css", "/portal.css"])
+        already_has_js  = self._has_link(html, ["/portal.bundle.js", "/portal.js"])
+        already_has_fa  = self._has_link(html, ["fontawesome", "font-awesome", "all.min.css"])
 
-        # 포털 CSS/JS 자동 주입 (있을 때만)
-        if self.MARKER not in resp.content:
-            css_url = self._pick_first(self.css_candidates)
-            js_url = self._pick_first(self.js_candidates)
+        css_url = None if already_has_css else self._pick_first(self.css_candidates)
+        js_url  = None if already_has_js  else self._pick_first(self.js_candidates)
 
-            if css_url or js_url:
-                inject_parts = ['\n', '<!-- __PORTAL_INJECTED__ -->', '\n']
-                if css_url:
-                    inject_parts.append(f'<link rel="stylesheet" href="{css_url}?v=1" />\n')
-                if js_url:
-                    inject_parts.append(f'<script src="{js_url}?v=1" defer></script>\n')
+        # FontAwesome: 로컬 우선, 없으면 CDN 1개 고정 주입
+        fa_url: str | None = None
+        if not already_has_fa:
+            if self._exists(self.fa_local):
+                fa_url = self.fa_local
+            else:
+                # CDN은 첫 후보만 주입 (6.5.2)
+                fa_url = self.fa_cdn_list[0]
 
-                payload = "".join(inject_parts)
-                if "</body>" in html:
-                    html = html.replace("</body>", payload + "</body>")
-                else:
-                    html += payload
+        if not css_url and not js_url and not fa_url:
+            return resp  # 주입할 게 없으면 그대로 반환
 
-        if fa_changed or (self.MARKER not in resp.content):
-            resp.content = html.encode(charset)
-            if resp.has_header("Content-Length"):
-                resp.headers["Content-Length"] = str(len(resp.content))
+        inject_parts = ['\n', '<!-- __PORTAL_INJECTED__ -->', '\n']
+        if fa_url:
+            inject_parts.append(
+                f'<link rel="preconnect" href="https://cdn.jsdelivr.net">\n'
+                f'<link rel="stylesheet" href="{fa_url}" crossorigin="anonymous" referrerpolicy="no-referrer" />\n'
+            )
+        if css_url:
+            inject_parts.append(f'<link rel="stylesheet" href="{css_url}?v=1" />\n')
+        if js_url:
+            inject_parts.append(f'<script src="{js_url}?v=1" defer></script>\n')
+
+        payload = "".join(inject_parts)
+        if "</body>" in html:
+            html = html.replace("</body>", payload + "</body>")
+        else:
+            html += payload
+
+        resp.content = html.encode(charset)
+        if resp.has_header("Content-Length"):
+            resp.headers["Content-Length"] = str(len(resp.content))
         return resp
 
 
@@ -265,7 +189,7 @@ class ExceptionLoggingMiddleware(MiddlewareMixin):
 
 
 # ─────────────────────────────────────────────────────────────
-#  D) 특정 경로 폴백
+#  D) 지정 경로 폴백
 # ─────────────────────────────────────────────────────────────
 FALLBACK_PAGES: dict[str, str] = {
     "glossary": """<!doctype html><meta charset="utf-8">
