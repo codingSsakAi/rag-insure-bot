@@ -1,4 +1,3 @@
-# insurance_project/middleware.py
 from __future__ import annotations
 import mimetypes
 from pathlib import Path
@@ -8,13 +7,11 @@ from django.http import FileResponse, HttpRequest, HttpResponse
 
 class PortalStaticBridgeMiddleware:
     """
-    /static/insurance_portal/** 요청만 디스크에서 직접 찾아 올바른 MIME으로 반환.
-    기존 기능은 그대로 유지.
+    /static/insurance_portal/** 요청을 소스 디렉터리에서 직접 찾아 MIME 맞춰 반환.
     우선순위:
       1) <BASE_DIR>/0826-5/insurance_portal/static/insurance_portal
       2) <BASE_DIR>/insurance_app/static/insurance_portal
     """
-
     URL_PREFIX = "/static/insurance_portal/"
 
     def __init__(self, get_response: Callable):
@@ -33,6 +30,7 @@ class PortalStaticBridgeMiddleware:
         rel_path = path[len(self.URL_PREFIX):].lstrip("/")
         for root in self.roots:
             candidate = (root / rel_path).resolve()
+            # 디렉터리 탈출 방지
             if not str(candidate).startswith(str(root)):
                 continue
             if candidate.is_file():
