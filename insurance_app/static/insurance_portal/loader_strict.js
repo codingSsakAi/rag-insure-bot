@@ -4,7 +4,6 @@
   window.__PORTAL_LOADER__ = true;
 
   const log = (...a) => console.log("[portal-loader]", ...a);
-
   const q = (sel) => document.querySelector(sel);
 
   const addLink = (href, attrs = {}) => {
@@ -32,7 +31,7 @@
 
   const ensureLocal = async (candidates, adder) => {
     for (const url of candidates) {
-      if (!url.startsWith("/static/")) continue; // 외부는 HEAD 금지 (CORS)
+      if (!url.startsWith("/static/")) continue; // 외부 HEAD는 CORS 회피
       if (await headOK(url)) {
         adder(url);
         return url;
@@ -42,13 +41,12 @@
   };
 
   (async () => {
-    // 1) Font Awesome — cdnjs 금지, jsDelivr만
+    // 외부 CDN은 jsDelivr만 사용 (CORS 안전)
     addLink(
       "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css",
       { crossorigin: "anonymous", referrerpolicy: "no-referrer" }
     );
 
-    // 2) Portal CSS (있는 것만 조용히 로드)
     await ensureLocal(
       [
         "/static/insurance_portal/css/portal.bundle.css",
@@ -57,7 +55,6 @@
       (href) => addLink(href)
     );
 
-    // 보조 CSS (있으면 붙임)
     await ensureLocal(
       ["/static/insurance_portal/css/chatbot.css"],
       (href) => addLink(href)
@@ -67,7 +64,6 @@
       (href) => addLink(href)
     );
 
-    // 3) JS 번들 (bundle 우선, 없으면 portal.js)
     const picked = await ensureLocal(
       [
         "/static/insurance_portal/js/portal.bundle.js",
