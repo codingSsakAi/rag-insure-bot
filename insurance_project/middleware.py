@@ -17,37 +17,90 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 #  A) /static/insurance_portal/** → 0826-5 … 브릿지
 # ─────────────────────────────────────────────────────────────
-class PortalStaticBridgeMiddleware(MiddlewareMixin):
-    URL_PREFIX = "/static/insurance_portal/"
+# ─────────────────────────────────────────────────────────────
+#  B) HTML 응답에 원본 토글 CSS/JS 자동 주입 (JS 주입 비활성화)
+# ─────────────────────────────────────────────────────────────
+class PortalAutoInjectMiddleware(MiddlewareMixin):
+    EXCLUDE_PREFIXES: tuple[str, ...] = ("/admin", "/static", "/media")
+    MARKER = b"<!-- __PORTAL_INJECTED__ -->"
 
     def __init__(self, get_response):
         super().__init__(get_response)
-        base: Path = settings.BASE_DIR
-        self.candidate_roots: list[Path] = [
-            base / "0826-5" / "insurance_portal" / "static" / "insurance_portal",
-            base / "insurance_portal" / "static" / "insurance_portal",
-            base / "insurance_app" / "static" / "insurance_portal",
+        # CSS는 FAB/포털 스타일 중 "있는 것" 1개만 주입 (404 소음 최소화)
+        self.css_candidates: list[str] = [
+            "/static/insurance_portal/css/fab.css",
+            "/static/insurance_portal/css/portal.css",
+            "/static/insurance_portal/style.css",
+            "/static/insurance_portal/styles.css",
         ]
+        # ✅ 우하단 3선 햄버거가 재등장하지 않도록 JS 자동 주입은 비워둔다
+        self.js_candidates: list[str] = []  # ["...loader_strict.js", "...portal.js"] 등 모두 제외
 
-    def _try_open(self, relpath: str) -> tuple[bytes | None, str | None]:
-        for root in self.candidate_roots:
-            f = root / relpath
-            if f.exists() and f.is_file():
-                data = f.read_bytes()
-                ctype, _ = mimetypes.guess_type(str(f))
-                return data, ctype or "application/octet-stream"
-        return None, None
+    def _exists(self, url_path: str) -> bool:
+        prefix = "/static/insurance_portal/"
+        if not url_path.startswith(prefix):
+            return False
+        rel = url_path[len(prefix):]
+        for root in [
+            settings.BASE_DIR / "0826-5" / "insurance_portal" / "static" / "insurance_portal",
+            settings.BASE_DIR / "insurance_portal" / "static" / "insurance_portal",
+            settings.BASE_DIR / "insurance_app" / "static" / "insurance_portal",
+        ]:
+            f = root / rel
+            if f.exists():
+                return True
+        return False
+
+    def _pick_first(self, urls: Iterable[str]) -> str | None:
+        for u in urls:
+            if self._exists(u):
+                return u
+        return None
 
     def __call__(self, request):
-        path = request.path
-        if path.startswith(self.URL_PREFIX):
-            rel = path[len(self.URL_PREFIX):]
-            data, ctype = self._try_open(rel)
-            if data is not None:
-                resp = HttpResponse(data, content_type=ctype)
-                resp["Cache-Control"] = "max-age=300, public"
-                return resp
-        return self.get_response(request)
+        for p in self.EXCLUDE_PREFIXES:
+            if request.path.startswith(p):
+                return self.get_response(request)
+
+        resp = self.get_response(request)
+
+        ctype = resp.headers.get("Content-Type", "")
+        if resp.status_code != 200 or "text/html" not in ctype:
+            return resp
+        if not hasattr(resp, "content"):
+            return resp
+        if self.MARKER in getattr(resp, "content", b""):
+            return resp
+
+        css_url = self._pick_first(self.css_candidates)
+        js_url = None  # JS 미주입
+
+        # 주입할 것이 없으면 통과
+        if not css_url and not js_url:
+            return resp
+
+        try:
+            charset = resp.charset or "utf-8"
+        except Exception:
+            charset = "utf-8"
+
+        html = resp.content.decode(charset, errors="ignore")
+        inject_parts = ['\n', '<!-- __PORTAL_INJECTED__ -->', '\n']
+        if css_url:
+            inject_parts.append(f'<link rel="stylesheet" href="{css_url}?v=1" />\n')
+        # js_url은 없음
+
+        payload = "".join(inject_parts)
+        if "</body>" in html:
+            html = html.replace("</body>", payload + "</body>")
+        else:
+            html += payload
+
+        resp.content = html.encode(charset)
+        if resp.has_header("Content-Length"):
+            resp.headers["Content-Length"] = str(len(resp.content))
+        return resp
+
 
 
 # ─────────────────────────────────────────────────────────────
