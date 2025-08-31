@@ -1,9 +1,9 @@
 // insurance_app/static/insurance_portal/loader.js
-// 목적: 초기화 실패시 3선 햄버거 버튼을 생성하던 fallback을 **전면 제거**
-(function(){
+// 목적: 과거 보조 로더의 fallback UI 생성/자산 탐색을 전면 차단.
+(function () {
   "use strict";
   try {
-    console.log("[portal-loader] secondary loader present (fallback UI removed)");
-    // 어떤 경우에도 버튼을 생성하거나 DOM을 주입하지 않는다.
-  } catch(e) {}
+    console.log("[portal-loader] secondary disabled (no asset probing, no fallback)");
+  } catch (_) {}
+  // 아무 것도 하지 않음.
 })();
