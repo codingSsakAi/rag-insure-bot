@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import mimetypes
 import logging
+import re
 import traceback
 from pathlib import Path
 from typing import Iterable
@@ -15,7 +16,7 @@ from django.template import TemplateDoesNotExist
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
-#  A) /static/insurance_portal/** → 브릿지 (HEAD/GET 모두 지원)
+#  A) /static/insurance_portal/** → 브릿지 (HEAD/GET 지원)
 # ─────────────────────────────────────────────────────────────
 class PortalStaticBridgeMiddleware(MiddlewareMixin):
     URL_PREFIX = "/static/insurance_portal/"
@@ -43,7 +44,6 @@ class PortalStaticBridgeMiddleware(MiddlewareMixin):
             rel = path[len(self.URL_PREFIX):]
             fpath, ctype = self._open_file(rel)
             if fpath is not None:
-                # HEAD는 본문 없이 헤더만
                 if request.method == "HEAD":
                     resp = HttpResponse(b"", content_type=ctype, status=200)
                     resp["Content-Length"] = "0"
@@ -57,15 +57,28 @@ class PortalStaticBridgeMiddleware(MiddlewareMixin):
 
 
 # ─────────────────────────────────────────────────────────────
-#  B) HTML 응답에 번들 + FontAwesome 자동 주입 (로더 의존 제거)
+#  B) HTML 응답 후처리: 깨진 cdnjs FA 제거 + 정상 FA/번들 주입
 # ─────────────────────────────────────────────────────────────
 class PortalAutoInjectMiddleware(MiddlewareMixin):
     EXCLUDE_PREFIXES: tuple[str, ...] = ("/admin", "/static", "/media")
     MARKER = b"<!-- __PORTAL_INJECTED__ -->"
 
+    # cdnjs font-awesome <link> 제거용 정규식
+    # 예: https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.2/css/all.min.css
+    RE_CDNJS_FA_LINK = re.compile(
+        r'<link[^>]+href=["\']https://cdnjs\.cloudflare\.com/ajax/libs/font-awesome/[^"\']+["\'][^>]*>\s*',
+        flags=re.IGNORECASE,
+    )
+
+    # 실제 <link rel="stylesheet" ...> 안에 fontawesome/all.min.css가 있는지 검사
+    RE_FA_LINK_TAG = re.compile(
+        r'<link[^>]+rel=["\']stylesheet["\'][^>]+href=["\'][^"\']*(fontawesome|font-awesome|all\.min\.css)[^"\']*["\'][^>]*>',
+        flags=re.IGNORECASE,
+    )
+
     def __init__(self, get_response):
         super().__init__(get_response)
-        # 실제 아카이브 구조 기준으로 "있는 파일만" 선택
+        # 존재 확인해서 넣을 포털 번들 후보(있는 것만 주입)
         self.css_candidates: list[str] = [
             "/static/insurance_portal/css/portal.bundle.css",
             "/static/insurance_portal/css/portal.css",
@@ -74,12 +87,9 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
             "/static/insurance_portal/js/portal.bundle.js",
             "/static/insurance_portal/js/portal.js",
         ]
-        # Font Awesome: 로컬 → CDN(jsDelivr 6.5.2) 우선순위
+        # FontAwesome: 로컬 → jsDelivr(6.5.2) 고정
         self.fa_local = "/static/insurance_portal/vendor/fontawesome/css/all.min.css"
-        self.fa_cdn_list = [
-            "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css",
-            "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css",
-        ]
+        self.fa_cdn = "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css"
 
     def _exists(self, url_path: str) -> bool:
         prefix = "/static/insurance_portal/"
@@ -102,11 +112,15 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
                 return u
         return None
 
-    def _has_link(self, html: str, substrings: Iterable[str]) -> bool:
-        return any(s in html for s in substrings)
+    def _strip_broken_fa(self, html: str) -> str:
+        # cdnjs font-awesome 링크 전부 제거
+        return self.RE_CDNJS_FA_LINK.sub("", html)
+
+    def _has_fa_link_tag(self, html: str) -> bool:
+        # 실제 <link rel="stylesheet" ... href=...fontawesome/all.min.css...> 존재 여부
+        return self.RE_FA_LINK_TAG.search(html) is not None
 
     def __call__(self, request):
-        # 정적/관리/미디어는 패스
         for p in self.EXCLUDE_PREFIXES:
             if request.path.startswith(p):
                 return self.get_response(request)
@@ -120,8 +134,6 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
             return resp
         if self.MARKER in resp.content:
             return resp
-
-        # 주입은 GET/POST만 (HEAD는 변형 금지)
         if request.method not in ("GET", "POST"):
             return resp
 
@@ -132,30 +144,31 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
 
         html = resp.content.decode(charset, errors="ignore")
 
-        # 이미 번들이 포함되어 있으면 스킵
-        already_has_css = self._has_link(html, ["/portal.bundle.css", "/portal.css"])
-        already_has_js  = self._has_link(html, ["/portal.bundle.js", "/portal.js"])
-        already_has_fa  = self._has_link(html, ["fontawesome", "font-awesome", "all.min.css"])
+        # 1) 깨진 cdnjs FA 링크 제거
+        html = self._strip_broken_fa(html)
 
-        css_url = None if already_has_css else self._pick_first(self.css_candidates)
-        js_url  = None if already_has_js  else self._pick_first(self.js_candidates)
+        # 2) 번들/FA 존재 여부 판단 (실제 <link>/<script> 태그 기준)
+        has_fa = self._has_fa_link_tag(html)
+        has_css = any(c in html for c in ("/css/portal.bundle.css", "/css/portal.css"))
+        has_js  = any(j in html for j in ("/js/portal.bundle.js", "/js/portal.js"))
 
-        # FontAwesome: 로컬 우선, 없으면 CDN 1개 고정 주입
+        css_url = None if has_css else self._pick_first(self.css_candidates)
+        js_url  = None if has_js  else self._pick_first(self.js_candidates)
+
         fa_url: str | None = None
-        if not already_has_fa:
+        if not has_fa:
             if self._exists(self.fa_local):
                 fa_url = self.fa_local
             else:
-                # CDN은 첫 후보만 주입 (6.5.2)
-                fa_url = self.fa_cdn_list[0]
+                fa_url = self.fa_cdn  # jsDelivr 고정
 
         if not css_url and not js_url and not fa_url:
-            return resp  # 주입할 게 없으면 그대로 반환
+            return resp
 
         inject_parts = ['\n', '<!-- __PORTAL_INJECTED__ -->', '\n']
         if fa_url:
             inject_parts.append(
-                f'<link rel="preconnect" href="https://cdn.jsdelivr.net">\n'
+                '<link rel="preconnect" href="https://cdn.jsdelivr.net">\n'
                 f'<link rel="stylesheet" href="{fa_url}" crossorigin="anonymous" referrerpolicy="no-referrer" />\n'
             )
         if css_url:
