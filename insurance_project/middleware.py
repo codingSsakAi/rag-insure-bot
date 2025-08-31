@@ -1,8 +1,8 @@
-# insurance_project/middleware.py
 from __future__ import annotations
 
 import mimetypes
 import logging
+import re
 import traceback
 from pathlib import Path
 from typing import Iterable
@@ -15,7 +15,7 @@ from django.template import TemplateDoesNotExist
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
-#  A) /static/insurance_portal/** → 파일 브릿지
+#  A) /static/insurance_portal/** → 0826-5 … 브릿지
 # ─────────────────────────────────────────────────────────────
 class PortalStaticBridgeMiddleware(MiddlewareMixin):
     URL_PREFIX = "/static/insurance_portal/"
@@ -51,28 +51,42 @@ class PortalStaticBridgeMiddleware(MiddlewareMixin):
 
 
 # ─────────────────────────────────────────────────────────────
-#  B) HTML 응답에 최소 요소만 자동 주입 (로더 X)
-#     - 우하단 햄버거 fallback(#ip-fallback) 은 확실히 숨김
+#  B) HTML 응답에 원본 토글 CSS/JS 자동 주입 + 깨진 CDN(FA) 교체
 # ─────────────────────────────────────────────────────────────
 class PortalAutoInjectMiddleware(MiddlewareMixin):
     EXCLUDE_PREFIXES: tuple[str, ...] = ("/admin", "/static", "/media")
+
+    # 중복 주입 방지용 마커
     MARKER = b"<!-- __PORTAL_INJECTED__ -->"
+    FA_MARKER = "<!-- __FA_FIXED__ -->"
+
+    # 정상 동작이 확인된 Font Awesome CDN (잘못된 버전 경로를 이걸로 교체)
+    # *주의*: 로컬에 vendor/fontawesome이 없어도 이 링크만으로 아이콘 복구됨.
+    FA_CDN = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+
+    # 잘못된/외부 FA 링크를 잡아내는 패턴 (버전 오타/경로 파편 포함)
+    FA_BAD_REGEX = re.compile(
+        r"""<link\s+[^>]*rel=["']stylesheet["'][^>]*href=["']\s*
+            https?://(?:cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net)[^"']*
+            (?:font-?awesome|/all(?:\.min)?\.css)[^"']*
+            ["'][^>]*>
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
 
     def __init__(self, get_response):
         super().__init__(get_response)
-        # 필요하면 '있는' CSS 한 가지만 조용히 붙입니다. (없으면 아무것도 안 붙음)
+        # 불필요한 404 소음을 줄이기 위해 후보를 최소화
         self.css_candidates: list[str] = [
             "/static/insurance_portal/css/portal.css",
             "/static/insurance_portal/portal.css",
-            "/static/insurance_portal/style.css",
-            "/static/insurance_portal/styles.css",
-            "/static/insurance_portal/css/fab.css",
         ]
-        # ❌ 여기서 로더 계열(loader_strict.js/loader.js/portal.js)은 제거합니다.
-        # 필요한 경우에만 가벼운 보조 스크립트만 주입하도록 유지합니다.
         self.js_candidates: list[str] = [
+            "/static/insurance_portal/loader_strict.js",
+            "/static/insurance_portal/loader.js",
+            "/static/insurance_portal/js/portal.js",
+            "/static/insurance_portal/portal.js",
             "/static/insurance_portal/js/navigation_handler.js",
-            # 다른 경량 스크립트를 추가하려면 여기에…
         ]
 
     def _exists(self, url_path: str) -> bool:
@@ -96,6 +110,42 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
                 return u
         return None
 
+    # ─────────────────────────────────────────────────────────
+    # (핵심) 깨진 Font Awesome CDN 링크 제거 + 정상 CDN으로 교체
+    # ─────────────────────────────────────────────────────────
+    def _fix_fontawesome(self, html: str) -> tuple[str, bool]:
+        changed = False
+
+        # 이미 우리 마커가 있으면 재처리하지 않음
+        if self.FA_MARKER in html:
+            return html, False
+
+        # 1) 기존에 박혀있는 깨진(또는 임의의) 외부 FA 링크 제거
+        new_html, n = self.FA_BAD_REGEX.subn("", html)
+        if n > 0:
+            logger.warning("Removed %d broken external Font Awesome link(s).", n)
+            changed = True
+
+        # 2) 현재 문서에 FA가 전혀 없는지 확인 (all.min.css 같은 키워드로 대략 체크)
+        if "all.min.css" not in new_html and "font-awesome" not in new_html.lower():
+            # head가 있으면 그 안에 넣고, 없으면 body 시작 전/문서 끝에 삽입
+            fa_tag = (
+                f'{self.FA_MARKER}\n'
+                f'<link rel="stylesheet" href="{self.FA_CDN}" '
+                f'crossorigin="anonymous" referrerpolicy="no-referrer">\n'
+            )
+            if "</head>" in new_html:
+                new_html = new_html.replace("</head>", fa_tag + "</head>")
+            elif "<body" in new_html:
+                # <body> 바로 뒤에 삽입
+                new_html = re.sub(r"(<body[^>]*>)", r"\1\n" + fa_tag, new_html, count=1, flags=re.IGNORECASE)
+            else:
+                # 최후: 문서 맨 앞에 삽입
+                new_html = fa_tag + new_html
+            changed = True
+
+        return new_html, changed
+
     def __call__(self, request):
         for p in self.EXCLUDE_PREFIXES:
             if request.path.startswith(p):
@@ -109,11 +159,21 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
         if not hasattr(resp, "content"):
             return resp
         if self.MARKER in resp.content:
+            # 이미 다른 주입이 끝난 응답이면 FA 패치만 한번 더 시도
+            try:
+                charset = resp.charset or "utf-8"
+            except Exception:
+                charset = "utf-8"
+
+            html = resp.content.decode(charset, errors="ignore")
+            html2, changed = self._fix_fontawesome(html)
+            if changed:
+                resp.content = html2.encode(charset)
+                if resp.has_header("Content-Length"):
+                    resp.headers["Content-Length"] = str(len(resp.content))
             return resp
 
-        css_url = self._pick_first(self.css_candidates)
-        js_url  = self._pick_first(self.js_candidates)
-
+        # 새 주입/패치 진행
         try:
             charset = resp.charset or "utf-8"
         except Exception:
@@ -121,29 +181,30 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
 
         html = resp.content.decode(charset, errors="ignore")
 
-        inject_parts = ['\n', '<!-- __PORTAL_INJECTED__ -->', '\n']
+        # 1) Font Awesome 깨진 CDN → 정상 CDN으로 교체
+        html, fa_changed = self._fix_fontawesome(html)
 
-        # (선택) 조용히 CSS 1개만
+        # 2) 포탈 CSS/JS 자동 주입(있을 때만)
+        css_url = self._pick_first(self.css_candidates)
+        js_url  = self._pick_first(self.js_candidates)
+
+        inject_parts = ['\n', '<!-- __PORTAL_INJECTED__ -->', '\n']
         if css_url:
             inject_parts.append(f'<link rel="stylesheet" href="{css_url}?v=1" />\n')
-
-        # fallback 햄버거 확실히 숨김 + 로더 비활성 플래그(혹시 다른 페이지에서 쓰더라도)
-        inject_parts.append('<style>#ip-fallback{display:none!important}</style>\n')
-        inject_parts.append('<script>window.__PORTAL_NO_FALLBACK__=true;window.__PORTAL_DISABLE_LOADER__=true;</script>\n')
-
-        # (선택) 경량 스크립트 1개만
         if js_url:
             inject_parts.append(f'<script src="{js_url}?v=1" defer></script>\n')
 
         payload = "".join(inject_parts)
-        if "</body>" in html:
-            html = html.replace("</body>", payload + "</body>")
-        else:
-            html += payload
+        if css_url or js_url:
+            if "</body>" in html:
+                html = html.replace("</body>", payload + "</body>")
+            else:
+                html += payload
 
-        resp.content = html.encode(charset)
-        if resp.has_header("Content-Length"):
-            resp.headers["Content-Length"] = str(len(resp.content))
+        if fa_changed or css_url or js_url:
+            resp.content = html.encode(charset)
+            if resp.has_header("Content-Length"):
+                resp.headers["Content-Length"] = str(len(resp.content))
         return resp
 
 
@@ -161,7 +222,8 @@ class ExceptionLoggingMiddleware(MiddlewareMixin):
 
 
 # ─────────────────────────────────────────────────────────────
-#  D) 지정 경로 폴백
+#  D) 폴백: 지정된 경로에서는 어떤 예외든 최소 HTML로 200 보장
+#     (정상 템플릿/뷰가 있으면 개입하지 않음)
 # ─────────────────────────────────────────────────────────────
 FALLBACK_PAGES: dict[str, str] = {
     "glossary": """<!doctype html><meta charset="utf-8">
@@ -208,6 +270,10 @@ def _fallback_key_from_path(path: str) -> str | None:
     return None
 
 class TemplateFallbackMiddleware(MiddlewareMixin):
+    """
+    - TemplateDoesNotExist는 물론, 지정 경로의 모든 예외에 대해 폴백 HTML 제공.
+    - 정상 템플릿/뷰가 있으면 절대 개입하지 않음.
+    """
     def __call__(self, request):
         try:
             return self.get_response(request)
