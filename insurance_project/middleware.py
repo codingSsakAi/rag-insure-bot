@@ -15,7 +15,7 @@ from django.template import TemplateDoesNotExist
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
-#  A) /static/insurance_portal/** → 0826-5 … 브릿지
+#  A) /static/insurance_portal/** → 파일 브릿지
 # ─────────────────────────────────────────────────────────────
 class PortalStaticBridgeMiddleware(MiddlewareMixin):
     URL_PREFIX = "/static/insurance_portal/"
@@ -51,9 +51,8 @@ class PortalStaticBridgeMiddleware(MiddlewareMixin):
 
 
 # ─────────────────────────────────────────────────────────────
-#  B) HTML 응답에 원본 토글 CSS/JS 자동 주입
-#     - 우하단 햄버거 fallback(#ip-fallback) 은 전역으로 비활성화
-#       (외부 정적 리소스가 실패해도 inline 스타일로 확실히 숨김)
+#  B) HTML 응답에 최소 요소만 자동 주입 (로더 X)
+#     - 우하단 햄버거 fallback(#ip-fallback) 은 확실히 숨김
 # ─────────────────────────────────────────────────────────────
 class PortalAutoInjectMiddleware(MiddlewareMixin):
     EXCLUDE_PREFIXES: tuple[str, ...] = ("/admin", "/static", "/media")
@@ -61,6 +60,7 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
 
     def __init__(self, get_response):
         super().__init__(get_response)
+        # 필요하면 '있는' CSS 한 가지만 조용히 붙입니다. (없으면 아무것도 안 붙음)
         self.css_candidates: list[str] = [
             "/static/insurance_portal/css/portal.css",
             "/static/insurance_portal/portal.css",
@@ -68,12 +68,11 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
             "/static/insurance_portal/styles.css",
             "/static/insurance_portal/css/fab.css",
         ]
+        # ❌ 여기서 로더 계열(loader_strict.js/loader.js/portal.js)은 제거합니다.
+        # 필요한 경우에만 가벼운 보조 스크립트만 주입하도록 유지합니다.
         self.js_candidates: list[str] = [
-            "/static/insurance_portal/loader_strict.js",
-            "/static/insurance_portal/loader.js",
-            "/static/insurance_portal/portal.js",
-            "/static/insurance_portal/js/portal.js",
             "/static/insurance_portal/js/navigation_handler.js",
+            # 다른 경량 스크립트를 추가하려면 여기에…
         ]
 
     def _exists(self, url_path: str) -> bool:
@@ -114,8 +113,6 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
 
         css_url = self._pick_first(self.css_candidates)
         js_url  = self._pick_first(self.js_candidates)
-        # CSS/JS가 하나도 없어도, 아래 인라인 스타일/플래그는 주입해 둔다
-        # (fallback 햄버거를 확실히 숨기기 위함)
 
         try:
             charset = resp.charset or "utf-8"
@@ -126,17 +123,15 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
 
         inject_parts = ['\n', '<!-- __PORTAL_INJECTED__ -->', '\n']
 
-        # 1) 후보 CSS가 있으면 링크
+        # (선택) 조용히 CSS 1개만
         if css_url:
             inject_parts.append(f'<link rel="stylesheet" href="{css_url}?v=1" />\n')
 
-        # 2) ⭐ 외부 리소스 실패와 무관하게 우하단 햄버거 fallback 을 항상 숨김
-        #    - #ip-fallback 요소를 CSS로 비표시
-        #    - JS에서 생성 자체를 막고 싶을 때 사용할 전역 플래그도 함께 세팅
+        # fallback 햄버거 확실히 숨김 + 로더 비활성 플래그(혹시 다른 페이지에서 쓰더라도)
         inject_parts.append('<style>#ip-fallback{display:none!important}</style>\n')
-        inject_parts.append('<script>window.__PORTAL_NO_FALLBACK__=true;</script>\n')
+        inject_parts.append('<script>window.__PORTAL_NO_FALLBACK__=true;window.__PORTAL_DISABLE_LOADER__=true;</script>\n')
 
-        # 3) 후보 JS가 있으면 로더 스크립트 삽입
+        # (선택) 경량 스크립트 1개만
         if js_url:
             inject_parts.append(f'<script src="{js_url}?v=1" defer></script>\n')
 
@@ -166,8 +161,7 @@ class ExceptionLoggingMiddleware(MiddlewareMixin):
 
 
 # ─────────────────────────────────────────────────────────────
-#  D) 폴백: 지정된 경로에서는 어떤 예외든 최소 HTML로 200 보장
-#     (정상 템플릿/뷰가 있으면 개입하지 않음)
+#  D) 지정 경로 폴백
 # ─────────────────────────────────────────────────────────────
 FALLBACK_PAGES: dict[str, str] = {
     "glossary": """<!doctype html><meta charset="utf-8">
@@ -214,10 +208,6 @@ def _fallback_key_from_path(path: str) -> str | None:
     return None
 
 class TemplateFallbackMiddleware(MiddlewareMixin):
-    """
-    - TemplateDoesNotExist는 물론, 지정 경로의 모든 예외에 대해 폴백 HTML 제공.
-    - 정상 템플릿/뷰가 있으면 절대 개입하지 않음.
-    """
     def __call__(self, request):
         try:
             return self.get_response(request)
