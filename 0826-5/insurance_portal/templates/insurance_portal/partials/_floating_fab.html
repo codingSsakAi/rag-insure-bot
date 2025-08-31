@@ -1,44 +1,39 @@
-<!-- 새로운 플로팅 액션 버튼 시스템 -->
-<div id="floating-fab" class="floating-fab-container">
-  <!-- 메인 토글 버튼 -->
-  <button id="fab-main-toggle" class="fab-main-btn" aria-label="메뉴 열기">
-    <i class="fa-solid fa-plus fab-main-icon"></i>
+<div id="floating-fab" class="fab-root" aria-live="polite">
+  <button class="fab-main" id="fabMainBtn" aria-expanded="false" aria-label="빠른 메뉴 열기">
+    <!-- + 아이콘(인라인 SVG) -->
+    <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M11 5h2v14h-2zM5 11h14v2H5z"></path>
+    </svg>
   </button>
-  
-  <!-- 서브 액션 버튼들 (초기에 숨김) -->
-  <div id="fab-sub-actions" class="fab-sub-container">
-    
-    <!-- 보상상식 -->
-    <div class="fab-action-item" data-action="claim-knowledge">
-      <span class="fab-label">자동차 보상상식</span>
-      <button class="fab-sub-btn fab-reward" data-target="claim-knowledge" aria-label="자동차 사고 보상상식">
-        <i class="fa-solid fa-car-burst"></i>
-      </button>
-    </div>
-    
-    <!-- 사고처리 가이드 -->
-    <div class="fab-action-item" data-action="guide">
-      <span class="fab-label">사고처리 가이드</span>
-      <button class="fab-sub-btn fab-guide" data-target="guide" aria-label="사고처리 가이드">
-        <i class="fa-solid fa-route"></i>
-      </button>
-    </div>
-    
-    <!-- 보험상식 -->
-    <div class="fab-action-item" data-action="knowhow">
-      <span class="fab-label">자동차 보험상식</span>
-      <button class="fab-sub-btn fab-knowhow" data-target="weekly" aria-label="보험상식">
-        <i class="fa-solid fa-book-open"></i>
-      </button>
-    </div>
-    
-    <!-- 챗봇 -->
-    <div class="fab-action-item" data-action="chatbot">
-      <span class="fab-label">과실 문의 챗봇</span>
-      <button class="fab-sub-btn fab-chatbot" data-target="chatbot" aria-label="챗봇">
-        <i class="fa-solid fa-headset"></i>
-      </button>
-    </div>
-    
+
+  <div class="fab-actions" id="fabActions" aria-hidden="true">
+    <button class="fab-action" data-action="guide" aria-label="사고 가이드">
+      <!-- 자동차 아이콘 -->
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M5 11l1-3a3 3 0 0 1 3-2h6a3 3 0 0 1 3 2l1 3v6h-2v-2H7v2H5v-6zM7 13h10l-.7-2.1A1 1 0 0 0 15.4 10H8.6a1 1 0 0 0-.9.9L7 13zM8 18a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm8 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/>
+      </svg>
+    </button>
+
+    <button class="fab-action" data-action="knowhow" aria-label="보험 상식">
+      <!-- 책 아이콘 -->
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M2 6a2 2 0 0 1 2-2h7v16H4a2 2 0 0 1-2-2V6zm11-2h7a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-7V4zM4 6v10h7V6H4zm11 0v10h7V6h-7z"/>
+      </svg>
+    </button>
+
+    <button class="fab-action" data-action="claim" aria-label="보상 상식">
+      <!-- 말풍선 + 체크 -->
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M12 2a8 8 0 0 1 8 8v5a3 3 0 0 1-3 3h-1v-2h1a1 1 0 0 0 1-1v-5a6 6 0 1 0-12 0v6H5a3 3 0 0 1-3-3v-3h2v3a1 1 0 0 0 1 1h1v-6a8 8 0 0 1 8-8z"/>
+        <path d="M10.5 12.5l1.7 1.7 3.3-3.3-1.4-1.4-1.9 1.9-.3-.3-1.4 1.4z"/>
+      </svg>
+    </button>
+
+    <button class="fab-action" data-action="chatbot" aria-label="과실 챗봇">
+      <!-- 로봇 -->
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M11 2h2v3h-2zM6 7h12a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-7a3 3 0 0 1 3-3zm2 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm8 0a2 2 0 1 0 .001 4.001A2 2 0 0 0 16 10zM8 18h8v-2H8v2z"/>
+      </svg>
+    </button>
   </div>
 </div>

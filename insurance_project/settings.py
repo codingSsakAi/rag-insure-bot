@@ -66,8 +66,6 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    # 성공한 HTML에만 원본 토글 CSS/JS 주입 (200 응답에만 동작)
-    "insurance_project.middleware.PortalAutoInjectMiddleware",
 ]
 
 ROOT_URLCONF = "insurance_project.urls"
