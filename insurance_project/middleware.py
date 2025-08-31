@@ -52,6 +52,8 @@ class PortalStaticBridgeMiddleware(MiddlewareMixin):
 
 # ─────────────────────────────────────────────────────────────
 #  B) HTML 응답에 원본 토글 CSS/JS 자동 주입
+#     - 우하단 햄버거 fallback(#ip-fallback) 은 전역으로 비활성화
+#       (외부 정적 리소스가 실패해도 inline 스타일로 확실히 숨김)
 # ─────────────────────────────────────────────────────────────
 class PortalAutoInjectMiddleware(MiddlewareMixin):
     EXCLUDE_PREFIXES: tuple[str, ...] = ("/admin", "/static", "/media")
@@ -112,8 +114,8 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
 
         css_url = self._pick_first(self.css_candidates)
         js_url  = self._pick_first(self.js_candidates)
-        if not css_url and not js_url:
-            return resp
+        # CSS/JS가 하나도 없어도, 아래 인라인 스타일/플래그는 주입해 둔다
+        # (fallback 햄버거를 확실히 숨기기 위함)
 
         try:
             charset = resp.charset or "utf-8"
@@ -121,9 +123,20 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
             charset = "utf-8"
 
         html = resp.content.decode(charset, errors="ignore")
+
         inject_parts = ['\n', '<!-- __PORTAL_INJECTED__ -->', '\n']
+
+        # 1) 후보 CSS가 있으면 링크
         if css_url:
             inject_parts.append(f'<link rel="stylesheet" href="{css_url}?v=1" />\n')
+
+        # 2) ⭐ 외부 리소스 실패와 무관하게 우하단 햄버거 fallback 을 항상 숨김
+        #    - #ip-fallback 요소를 CSS로 비표시
+        #    - JS에서 생성 자체를 막고 싶을 때 사용할 전역 플래그도 함께 세팅
+        inject_parts.append('<style>#ip-fallback{display:none!important}</style>\n')
+        inject_parts.append('<script>window.__PORTAL_NO_FALLBACK__=true;</script>\n')
+
+        # 3) 후보 JS가 있으면 로더 스크립트 삽입
         if js_url:
             inject_parts.append(f'<script src="{js_url}?v=1" defer></script>\n')
 
