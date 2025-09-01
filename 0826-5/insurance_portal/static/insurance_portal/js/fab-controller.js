@@ -1,52 +1,76 @@
 /**
- * 플로팅 액션 버튼 컨트롤러
- * 스크롤 추적, 확장/수축, 상태 관리
- * - 우하단 레거시 햄버거 FAB(#ip-fab 등) 강제 숨김
- * - floating-fab 마크업이 없으면 sideActions로 자동 폴백
- * - floating-fab이 있을 때만 .side-actions 숨김(중복 노출 방지)
- * - 아이콘 폰트 실패 시 인라인 SVG/문자 폴백 주입
+ * 플로팅 액션 버튼 컨트롤러 (weekly 대응 완전판)
+ * - 스크롤 추적, 확장/수축, 상태 관리
+ * - floating-fab이 있으면 레거시 FAB/사이드 버튼 숨김(중복 방지)
+ * - floating-fab이 없으면 사이드 버튼(#*-fab)로 폴백
+ * - 아이콘 폰트 실패 시 인라인 아이콘 폴백
+ * - guide / knowhow / weekly / claim-knowledge / chatbot 실행 & 상태 동기화
  */
 
 class FloatingFABController {
   constructor() {
+    // DOM refs
     this.fabContainer = null;
     this.mainToggle = null;
     this.subContainer = null;
     this.actionItems = [];
+
+    // states
     this.isExpanded = false;
     this.activeAction = null;
     this.scrollTimeout = null;
     this.lastScrollY = window.scrollY;
     this.debugMode = false;
 
-    // 바인딩을 위해 메서드 바인드
+    // 메서드 바인딩(폴백 바인딩에서 this 유지)
     this.executeClaimKnowledge = this.executeClaimKnowledge.bind(this);
     this.executeGuide = this.executeGuide.bind(this);
     this.executeKnowhow = this.executeKnowhow.bind(this);
+    this.executeWeekly = this.executeWeekly.bind(this);
     this.executeChatbot = this.executeChatbot.bind(this);
 
     this.init();
   }
 
-  /** 레거시 우하단 햄버거 FAB 숨김 */
+  /** 레거시 포털 햄버거(엄격 로더가 만든 #ip-*) 강제 숨김 */
   hideLegacyHamburger() {
     ['ip-fab', 'ip-panel', 'ip-overlay'].forEach(id => {
       const el = document.getElementById(id);
       if (el) {
         el.style.setProperty('display', 'none', 'important');
         el.style.setProperty('visibility', 'hidden', 'important');
+        el.setAttribute('aria-hidden', 'true');
       }
     });
   }
 
-  /** 아이콘 폰트 실패 시 폴백(인라인 SVG 또는 문자) 주입 */
+  /** floating-fab이 없을 때 사이드 버튼을 안전하게 폴백 바인딩 */
+  bindSideFallback() {
+    const bind = (id, fn) => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('click', (e) => {
+        e.preventDefault?.();
+        fn();
+      }, { passive: true });
+    };
+    bind('claim-knowledge-fab', this.executeClaimKnowledge);
+    bind('guide-fab', this.executeGuide);
+    bind('weekly-fab', this.executeWeekly);     // ✅ weekly 전용 연결
+    bind('chatbot-fab', this.executeChatbot);
+
+    this.ensureIconVisibility();
+    if (this.debugMode) console.log('[FAB] 사이드 FAB 폴백 바인딩 완료');
+  }
+
+  /** 아이콘 폰트 실패 시 인라인 아이콘/문자 폴백 주입 */
   ensureIconVisibility() {
     try {
       // 메인 토글
       if (this.mainToggle) {
-        const hasVisibleIcon = !!this.mainToggle.querySelector('.icon-ms, .fa, .fas, .fab, .far, .fa-solid, .material-symbols-outlined');
-        if (!hasVisibleIcon) {
-          // 폴백: + 문자
+        const hasIcon = !!this.mainToggle.querySelector(
+          '.icon-ms, .fa, .fas, .fab, .far, .fa-solid, .material-symbols-outlined, svg'
+        );
+        if (!hasIcon) {
           const span = document.createElement('span');
           span.textContent = '+';
           span.setAttribute('aria-hidden', 'true');
@@ -55,13 +79,12 @@ class FloatingFABController {
           this.mainToggle.appendChild(span);
         }
       }
-
       // 서브 버튼들
-      const subBtns = document.querySelectorAll('.fab-sub-btn');
-      subBtns.forEach(btn => {
-        const hasIcon = !!btn.querySelector('.icon-ms, .fa, .fas, .fab, .far, .fa-solid, .material-symbols-outlined, svg');
-        if (!hasIcon) {
-          // 간단한 원형 점 SVG 폴백
+      document.querySelectorAll('.fab-sub-btn').forEach(btn => {
+        const has = !!btn.querySelector(
+          '.icon-ms, .fa, .fas, .fab, .far, .fa-solid, .material-symbols-outlined, svg'
+        );
+        if (!has) {
           const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
           svg.setAttribute('viewBox', '0 0 24 24');
           svg.style.width = '20px';
@@ -79,64 +102,84 @@ class FloatingFABController {
     }
   }
 
-  /** floating-fab이 없을 때 사이드 FAB로 동작 폴백 */
-  bindSideFallback() {
-    const bind = (id, fn) => {
-      const el = document.getElementById(id);
-      if (el) el.addEventListener('click', fn, { passive: true });
-    };
-    bind('claim-knowledge-fab', this.executeClaimKnowledge);
-    bind('guide-fab', this.executeGuide);
-    bind('weekly-fab', this.executeKnowhow);
-    bind('chatbot-fab', this.executeChatbot);
+  /** 기존(레거시) FAB/사이드 액션 숨김: floating-fab 있을 때만 */
+  disableLegacyFABs(hasFloatingFab) {
+    try {
+      const legacySelectors = [
+        '#guide-fab',
+        '#weekly-fab',
+        '#claim-knowledge-fab',
+        '#chatbot-fab',
+        '.fab-wrap',
+        '.side-actions',
+      ];
+      if (!hasFloatingFab) {
+        // floating-fab이 없으면 사이드 버튼 유지(폴백용)
+        return;
+      }
+      legacySelectors.forEach(selector => {
+        document.querySelectorAll(selector).forEach(el => {
+          el.style.display = 'none';
+          el.setAttribute('aria-hidden', 'true');
+        });
+      });
+      if (this.debugMode) console.log('[FAB] 레거시 FAB/사이드 액션 숨김');
+    } catch (e) {
+      console.warn('Legacy FAB 비활성화 중 오류:', e);
+    }
+  }
 
-    // 아이콘 폴백도 적용
-    this.ensureIconVisibility();
-
-    if (this.debugMode) console.log('사이드 FAB 폴백 바인딩 완료');
+  /** 기존 이벤트 충돌 방지 (특히 claim-knowledge 등) */
+  preventEventConflicts() {
+    try {
+      const legacyClaimBtn = document.getElementById('claim-knowledge-fab');
+      if (legacyClaimBtn) {
+        legacyClaimBtn.replaceWith(legacyClaimBtn.cloneNode(true));
+      }
+      const legacyWeeklyBtn = document.getElementById('weekly-fab');
+      if (legacyWeeklyBtn) {
+        legacyWeeklyBtn.replaceWith(legacyWeeklyBtn.cloneNode(true));
+      }
+    } catch (e) {
+      console.warn('이벤트 충돌 방지 중 오류:', e);
+    }
   }
 
   init() {
     try {
-      // 0) 레거시 우하단 햄버거 FAB 숨김 (항상)
       this.hideLegacyHamburger();
 
-      // 1) DOM 요소 찾기
+      // DOM 찾기
       this.fabContainer = document.getElementById('floating-fab');
       this.mainToggle = document.getElementById('fab-main-toggle');
       this.subContainer = document.getElementById('fab-sub-actions');
       this.actionItems = document.querySelectorAll('.fab-action-item');
 
-      // 2) 우측 중앙 FAB 마크업이 없으면 사이드 FAB로 폴백
-      if (!this.fabContainer || !this.mainToggle) {
-        console.warn('floating-fab이 없어 sideActions로 폴백합니다.');
-        // 절대 사이드 FAB를 숨기지 말고, 클릭 바인딩만 해준다.
-        this.preventEventConflicts();     // 충돌 최소화
-        this.initModalStateTracking();    // 상태 동기화(가능한 범위)
-        this.bindSideFallback();          // 폴백 바인딩
-        // 디버그 모드
-        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      const hasFloating = !!(this.fabContainer && this.mainToggle);
+
+      // 공통 보호 로직
+      this.preventEventConflicts();
+      this.initModalStateTracking();
+
+      if (!hasFloating) {
+        console.warn('[FAB] floating-fab 없음 → 사이드 버튼 폴백 모드');
+        this.bindSideFallback();
+        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
           this.enableDebugMode();
         }
         return;
       }
 
-      // 3) (우측 중앙 FAB가 있을 때만) 레거시/사이드 FAB 숨김
+      // 중복 노출 방지
       this.disableLegacyFABs(true);
 
-      // 4) 이벤트 충돌 방지 & 모달 상태 추적
-      this.preventEventConflicts();
-      this.initModalStateTracking();
-
-      // 5) 기본 초기화
+      // 기본 초기화
       this.bindEvents();
       this.initScrollTracking();
-
-      // 6) 아이콘 폴백(폰트 실패 대비)
       this.ensureIconVisibility();
 
-      // 7) 디버그 모드 (개발 시에만)
-      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      // 디버그
+      if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
         this.enableDebugMode();
       }
 
@@ -148,17 +191,16 @@ class FloatingFABController {
 
   bindEvents() {
     try {
-      // 메인 토글 버튼 클릭
+      // 메인 토글
       this.mainToggle.addEventListener('click', (e) => {
         e.preventDefault();
         this.toggleExpansion();
       });
 
-      // 서브 버튼 클릭 (기능 실행)
+      // 서브 버튼
       this.actionItems.forEach(item => {
         const button = item.querySelector('.fab-sub-btn');
         const action = item.dataset.action;
-
         if (button && action) {
           button.addEventListener('click', (e) => {
             e.preventDefault();
@@ -167,11 +209,10 @@ class FloatingFABController {
         }
       });
 
-      // 라벨 클릭 (서브 버튼과 동일한 동작)
+      // 라벨도 동일 동작
       this.actionItems.forEach(item => {
         const label = item.querySelector('.fab-label');
         const action = item.dataset.action;
-
         if (label && action) {
           label.addEventListener('click', (e) => {
             e.preventDefault();
@@ -186,19 +227,19 @@ class FloatingFABController {
           if (!this.fabContainer.contains(e.target) && this.isExpanded) {
             this.collapseActions();
           }
-        } catch (error) {
-          console.warn('외부 클릭 처리 중 오류:', error);
+        } catch (err) {
+          console.warn('외부 클릭 처리 중 오류:', err);
         }
       });
 
-      // ESC 키로 접기
+      // ESC 접기
       document.addEventListener('keydown', (e) => {
         try {
           if (e.key === 'Escape' && this.isExpanded) {
             this.collapseActions();
           }
-        } catch (error) {
-          console.warn('키보드 이벤트 처리 중 오류:', error);
+        } catch (err) {
+          console.warn('키보드 이벤트 처리 중 오류:', err);
         }
       });
     } catch (error) {
@@ -208,17 +249,8 @@ class FloatingFABController {
 
   initScrollTracking() {
     try {
-      // 스크롤 이벤트 리스너
-      window.addEventListener('scroll', () => {
-        this.handleScroll();
-      }, { passive: true });
-
-      // 리사이즈 이벤트 (뷰포트 변경 시 위치 재조정)
-      window.addEventListener('resize', () => {
-        this.adjustPosition();
-      });
-
-      // 초기 위치 설정
+      window.addEventListener('scroll', () => { this.handleScroll(); }, { passive: true });
+      window.addEventListener('resize', () => { this.adjustPosition(); });
       this.adjustPosition();
     } catch (error) {
       this.handleError(error, 'initScrollTracking');
@@ -230,36 +262,28 @@ class FloatingFABController {
       const currentScrollY = window.scrollY;
       const scrollDelta = currentScrollY - this.lastScrollY;
 
-      // 스크롤 방향에 따른 FAB 위치 조정
       this.updateFABPosition(scrollDelta);
-
       this.lastScrollY = currentScrollY;
 
-      // 스크롤 중일 때는 확장된 상태를 접기
       if (this.isExpanded) {
         clearTimeout(this.scrollTimeout);
-        this.scrollTimeout = setTimeout(() => {
-          // 스크롤 멈춤 후 대기 (필요 시 동작 추가)
-        }, 150);
+        this.scrollTimeout = setTimeout(() => {}, 150);
       }
     } catch (error) {
       console.warn('스크롤 처리 중 오류:', error);
     }
   }
 
-  updateFABPosition(scrollDelta) {
+  updateFABPosition() {
     try {
       const viewportHeight = window.innerHeight;
       const documentHeight = document.documentElement.scrollHeight;
-      const scrollProgress = (documentHeight - viewportHeight) > 0
-        ? window.scrollY / (documentHeight - viewportHeight)
-        : 0;
+      const denom = Math.max(1, documentHeight - viewportHeight);
+      const scrollProgress = Math.min(1, Math.max(0, window.scrollY / denom));
 
-      // 스크롤 진행률에 따라 FAB 위치 조정 (30% ~ 70% 범위에서 움직임)
-      const minPosition = 30; // 뷰포트 상단으로부터 30%
-      const maxPosition = 70; // 뷰포트 상단으로부터 70%
-      const positionRange = maxPosition - minPosition;
-      const newPosition = minPosition + (scrollProgress * positionRange);
+      // 30%~70% 범위 이동
+      const minPosition = 30, maxPosition = 70;
+      const newPosition = minPosition + (scrollProgress * (maxPosition - minPosition));
 
       this.fabContainer.style.top = `${newPosition}%`;
       this.fabContainer.style.bottom = 'auto';
@@ -271,26 +295,15 @@ class FloatingFABController {
 
   adjustPosition() {
     try {
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
 
       this.fabContainer.style.position = 'fixed';
       this.fabContainer.style.display = 'block';
       this.fabContainer.style.visibility = 'visible';
-
-      if (viewportWidth < 768) {
-        this.fabContainer.style.right = '16px';
-      } else {
-        this.fabContainer.style.right = '24px';
-      }
-
-      // 초기 중앙 고정
-      this.fabContainer.style.top = '50%';
+      this.fabContainer.style.right = w < 768 ? '16px' : '24px';
+      this.fabContainer.style.top = h < 600 ? '40%' : '50%';
       this.fabContainer.style.transform = 'translateY(-50%)';
-
-      if (viewportHeight < 600) {
-        this.fabContainer.style.top = '40%';
-      }
     } catch (error) {
       console.warn('위치 조정 중 오류:', error);
     }
@@ -298,11 +311,8 @@ class FloatingFABController {
 
   toggleExpansion() {
     try {
-      if (this.isExpanded) {
-        this.collapseActions();
-      } else {
-        this.expandActions();
-      }
+      if (this.isExpanded) this.collapseActions();
+      else this.expandActions();
     } catch (error) {
       this.handleError(error, 'toggleExpansion');
     }
@@ -314,12 +324,9 @@ class FloatingFABController {
       this.fabContainer.classList.add('expanded');
       this.mainToggle.setAttribute('aria-label', '메뉴 닫기');
       this.mainToggle.setAttribute('aria-expanded', 'true');
-
-      // 백드롭 표시
       document.body.classList.add('fab-backdrop-active');
-
       this.announceToScreenReader('메뉴가 열렸습니다');
-      if (this.debugMode) console.log('FAB 확장됨 (반원 배치)');
+      if (this.debugMode) console.log('FAB 확장됨');
     } catch (error) {
       this.handleError(error, 'expandActions');
     }
@@ -331,13 +338,10 @@ class FloatingFABController {
       this.fabContainer.classList.remove('expanded');
       this.mainToggle.setAttribute('aria-label', '메뉴 열기');
       this.mainToggle.setAttribute('aria-expanded', 'false');
-
-      // 백드롭 제거
       document.body.classList.remove('fab-backdrop-active');
-
       if (this.activeAction) this.clearActiveAction();
       this.announceToScreenReader('메뉴가 닫혔습니다');
-      if (this.debugMode) console.log('FAB 접힘됨');
+      if (this.debugMode) console.log('FAB 접힘');
     } catch (error) {
       this.handleError(error, 'collapseActions');
     }
@@ -345,21 +349,10 @@ class FloatingFABController {
 
   handleActionClick(action, itemElement) {
     try {
-      // 이전 활성화 해제
-      if (this.activeAction) {
-        this.clearActiveAction();
-      }
-
-      // 새로운 액션 활성화
+      if (this.activeAction) this.clearActiveAction();
       this.setActiveAction(action, itemElement);
-
-      // 기능 실행
       this.executeActionEnhanced(action);
-
-      // 잠시 후 메뉴 접기
-      setTimeout(() => {
-        this.collapseActions();
-      }, 300);
+      setTimeout(() => this.collapseActions(), 300);
     } catch (error) {
       this.handleError(error, 'handleActionClick');
     }
@@ -369,16 +362,9 @@ class FloatingFABController {
     try {
       this.activeAction = action;
       itemElement.classList.add('active');
-
-      // 접근성
       const button = itemElement.querySelector('.fab-sub-btn');
-      if (button) {
-        button.setAttribute('aria-pressed', 'true');
-      }
-
-      if (this.debugMode) {
-        console.log(`Active action set: ${action}`);
-      }
+      if (button) button.setAttribute('aria-pressed', 'true');
+      if (this.debugMode) console.log(`Active action: ${action}`);
     } catch (error) {
       this.handleError(error, 'setActiveAction');
     }
@@ -386,169 +372,108 @@ class FloatingFABController {
 
   clearActiveAction() {
     try {
-      if (this.activeAction) {
-        const activeItem = document.querySelector(`[data-action="${this.activeAction}"]`);
-        if (activeItem) {
-          activeItem.classList.remove('active');
-          const button = activeItem.querySelector('.fab-sub-btn');
-          if (button) {
-            button.setAttribute('aria-pressed', 'false');
-          }
-        }
-
-        if (this.debugMode) {
-          console.log(`Active action cleared: ${this.activeAction}`);
-        }
-
-        this.activeAction = null;
+      if (!this.activeAction) return;
+      const activeItem = document.querySelector(`[data-action="${this.activeAction}"]`);
+      if (activeItem) {
+        activeItem.classList.remove('active');
+        const button = activeItem.querySelector('.fab-sub-btn');
+        if (button) button.setAttribute('aria-pressed', 'false');
       }
+      if (this.debugMode) console.log(`Active cleared: ${this.activeAction}`);
+      this.activeAction = null;
     } catch (error) {
       this.handleError(error, 'clearActiveAction');
     }
   }
 
-  // 모달 상태 감지 및 동기화
+  /** 모달/패널 상태 감지 → FAB 항목 active 동기화 (weekly 포함) */
   initModalStateTracking() {
     try {
-      // Bootstrap 모달 이벤트 감지
-      const bootstrapModals = ['guideModal', 'knowhowModal', 'claimKnowledgeModal'];
-
-      bootstrapModals.forEach(modalId => {
-        const modalElement = document.getElementById(modalId);
-        if (modalElement) {
-          modalElement.addEventListener('shown.bs.modal', () => {
-            this.syncActiveState(this.getActionByModalId(modalId));
-          });
-
-          modalElement.addEventListener('hidden.bs.modal', () => {
-            this.clearActiveAction();
-          });
-        }
+      // Bootstrap 모달들
+      const bsModals = ['guideModal', 'knowhowModal', 'weeklyModal'];
+      bsModals.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('shown.bs.modal', () => {
+          this.syncActiveState(this.getActionByModalId(id));
+        });
+        el.addEventListener('hidden.bs.modal', () => {
+          this.clearActiveAction();
+        });
       });
 
-      // 챗봇 패널 상태 감지
-      const chatbotContainer = document.getElementById('chatbot-container');
-      if (chatbotContainer) {
-        const chatbotObserver = new MutationObserver((mutations) => {
-          mutations.forEach((mutation) => {
-            if (mutation.type === 'attributes' && mutation.attributeName === 'style') {
-              const display = window.getComputedStyle(chatbotContainer).display;
-              if (display !== 'none') {
-                this.syncActiveState('chatbot');
-              } else {
-                this.clearActiveAction();
-              }
+      // 커스텀 모달 감시(클래스/hidden) : claim-knowledge, knowhow, weekly
+      const watchIds = ['claim-knowledge-modal', 'knowhow-modal', 'weekly-modal'];
+      watchIds.forEach(mid => {
+        const target = document.getElementById(mid);
+        if (!target) return;
+        const obs = new MutationObserver(muts => {
+          muts.forEach(m => {
+            if (m.type === 'attributes' && (m.attributeName === 'hidden' || m.attributeName === 'class')) {
+              const isShown = !target.hasAttribute('hidden') || target.classList.contains('show');
+              if (isShown) this.syncActiveState(this.getActionByModalId(mid));
+              else this.clearActiveAction();
             }
           });
         });
+        obs.observe(target, { attributes: true, attributeFilter: ['hidden', 'class'] });
+      });
 
-        chatbotObserver.observe(chatbotContainer, {
-          attributes: true,
-          attributeFilter: ['style']
+      // 챗봇 패널
+      const chatbotContainer = document.getElementById('chatbot-container');
+      if (chatbotContainer) {
+        const chatbotObserver = new MutationObserver((muts) => {
+          muts.forEach(m => {
+            if (m.type === 'attributes' && m.attributeName === 'style') {
+              const display = window.getComputedStyle(chatbotContainer).display;
+              if (display !== 'none') this.syncActiveState('chatbot');
+              else this.clearActiveAction();
+            }
+          });
         });
+        chatbotObserver.observe(chatbotContainer, { attributes: true, attributeFilter: ['style'] });
       }
     } catch (error) {
       this.handleError(error, 'initModalStateTracking');
     }
   }
 
-  // 모달 ID로 액션 타입 찾기
+  /** 모달 ID → 액션 매핑 */
   getActionByModalId(modalId) {
-    const modalActionMap = {
+    const map = {
       'guideModal': 'guide',
       'knowhowModal': 'knowhow',
-      'claimKnowledgeModal': 'claim-knowledge',
+      'knowhow-modal': 'knowhow',
+      'weeklyModal': 'weekly',          // ✅ 부트스트랩 weekly
+      'weekly-modal': 'weekly',         // ✅ 커스텀 weekly
+      'claim-knowledge-modal': 'claim-knowledge',
       'chatbot-container': 'chatbot'
     };
-    return modalActionMap[modalId];
+    return map[modalId];
   }
 
-  // 활성 상태 동기화
+  /** 현재 열린 UI와 FAB active 상태 동기화 */
   syncActiveState(action) {
     try {
-      if (this.activeAction !== action) {
-        this.clearActiveAction();
-
-        if (action) {
-          const itemElement = document.querySelector(`[data-action="${action}"]`);
-          if (itemElement) {
-            this.setActiveAction(action, itemElement);
-          }
-        }
-      }
+      if (!action || this.activeAction === action) return;
+      this.clearActiveAction();
+      const item = document.querySelector(`[data-action="${action}"]`);
+      if (item) this.setActiveAction(action, item);
     } catch (error) {
       this.handleError(error, 'syncActiveState');
     }
   }
 
-  /**
-   * 기존 FAB/사이드 FAB 비활성화
-   * @param {boolean} hasFloating - floating-fab가 있을 때만 사이드 FAB 숨김
-   */
-  disableLegacyFABs(hasFloating) {
-    try {
-      const selectors = [
-        '#guide-fab',
-        '#weekly-fab',
-        '#claim-knowledge-fab',
-        '#chatbot-fab',
-        '.fab-wrap'
-      ];
-
-      // floating-fab이 있는 경우에만 .side-actions 숨김 (없으면 절대 숨기지 말 것)
-      if (hasFloating) {
-        selectors.push('.side-actions');
-      }
-
-      selectors.forEach(selector => {
-        const elements = document.querySelectorAll(selector);
-        elements.forEach(el => {
-          el.style.display = 'none';
-          el.setAttribute('aria-hidden', 'true');
-        });
-      });
-
-      if (this.debugMode) {
-        console.log('Legacy FABs disabled (hasFloating=' + !!hasFloating + ')');
-      }
-    } catch (error) {
-      console.warn('Legacy FAB 비활성화 중 오류:', error);
-    }
-  }
-
-  // 기존 이벤트 리스너와의 충돌 방지
-  preventEventConflicts() {
-    try {
-      // 기존 claim-knowledge 이벤트 제거
-      const legacyClaimBtn = document.getElementById('claim-knowledge-fab');
-      if (legacyClaimBtn) {
-        legacyClaimBtn.replaceWith(legacyClaimBtn.cloneNode(true));
-      }
-    } catch (error) {
-      console.warn('이벤트 충돌 방지 중 오류:', error);
-    }
-  }
-
-  // 향상된 기능 실행 메서드
+  /** 액션 실행 디스패처 */
   executeActionEnhanced(action) {
     try {
-      if (this.debugMode) {
-        console.log(`FAB Action executed: ${action}`);
-      }
-
+      if (this.debugMode) console.log(`Execute: ${action}`);
       switch (action) {
-        case 'claim-knowledge':
-          this.executeClaimKnowledge();
-          break;
-        case 'guide':
-          this.executeGuide();
-          break;
-        case 'knowhow':
-          this.executeKnowhow();
-          break;
-        case 'chatbot':
-          this.executeChatbot();
-          break;
+        case 'claim-knowledge': return this.executeClaimKnowledge();
+        case 'guide':           return this.executeGuide();
+        case 'knowhow':         return this.executeKnowhow();
+        case 'weekly':          return this.executeWeekly();   // ✅ weekly 실행
+        case 'chatbot':         return this.executeChatbot();
         default:
           console.warn(`Unknown action: ${action}`);
       }
@@ -557,27 +482,26 @@ class FloatingFABController {
     }
   }
 
-  /** 자동차 보상상식 */
+  // ====== 각 액션 구체 동작 ======
+
   executeClaimKnowledge() {
     try {
       if (typeof window.openClaimKnowledge === 'function') {
-        window.openClaimKnowledge(); // 데이터 로딩 + 모달 표시
+        window.openClaimKnowledge(); // 데이터 로딩 + 모달
         return;
       }
-      // 폴백: Bootstrap 모달 직접 열기
-      const modal = document.getElementById('claimKnowledgeModal');
-      if (modal && typeof bootstrap !== 'undefined') {
-        const m = bootstrap.Modal.getOrCreateInstance(modal);
-        m.show();
+      const modal = document.getElementById('claim-knowledge-modal');
+      if (modal) {
+        modal.removeAttribute('hidden');
+        requestAnimationFrame(() => modal.classList.add('show'));
       } else {
-        console.warn('claimKnowledgeModal을 찾을 수 없습니다.');
+        console.warn('claim-knowledge-modal을 찾을 수 없습니다.');
       }
-    } catch (error) {
-      this.handleError(error, 'executeClaimKnowledge');
+    } catch (e) {
+      this.handleError(e, 'executeClaimKnowledge');
     }
   }
 
-  /** 사고처리 가이드 */
   executeGuide() {
     try {
       if (typeof window.openGuide === 'function') {
@@ -585,106 +509,131 @@ class FloatingFABController {
         return;
       }
       const guideModal = document.getElementById('guideModal');
-      if (guideModal && typeof bootstrap !== 'undefined') {
-        const modal = bootstrap.Modal.getOrCreateInstance(guideModal);
-        modal.show();
+      if (guideModal && typeof bootstrap !== 'undefined' && typeof bootstrap.Modal === 'function') {
+        new bootstrap.Modal(guideModal).show();
       } else {
         const legacyBtn = document.getElementById('guide-fab');
         if (legacyBtn && typeof legacyBtn.click === 'function') legacyBtn.click();
         else console.warn('가이드 모달을 열 수 없습니다.');
       }
-    } catch (error) {
-      this.handleError(error, 'executeGuide');
+    } catch (e) {
+      this.handleError(e, 'executeGuide');
     }
   }
 
-  /** 자동차 보험상식 */
   executeKnowhow() {
     try {
       if (typeof window.openKnowhow === 'function') {
         window.openKnowhow();
         return;
       }
-      const el = document.getElementById('knowhowModal');
-      if (el && typeof bootstrap !== 'undefined') {
-        const modal = bootstrap.Modal.getOrCreateInstance(el);
-        modal.show();
-      } else {
-        console.warn('knowhowModal을 찾을 수 없습니다.');
+      // 커스텀 모달 우선
+      const custom = document.getElementById('knowhow-modal');
+      if (custom) {
+        custom.removeAttribute('hidden');
+        requestAnimationFrame(() => custom.classList.add('show'));
+        return;
       }
+      // 부트스트랩 모달
+      const bs = document.getElementById('knowhowModal');
+      if (bs && typeof bootstrap !== 'undefined' && typeof bootstrap.Modal === 'function') {
+        new bootstrap.Modal(bs).show();
+        return;
+      }
+      // 폴백: 레거시 버튼
+      const legacyBtn = document.getElementById('knowhow-fab') || document.getElementById('weekly-fab');
+      if (legacyBtn && typeof legacyBtn.click === 'function') legacyBtn.click();
+      else console.warn('노하우/주간 모달을 열 수 없습니다.');
     } catch (e) {
       this.handleError(e, 'executeKnowhow');
     }
   }
 
-  /** 챗봇 */
-  executeChatbot() {
+  /** ✅ weekly 전용 실행 로직 (다층 폴백) */
+  executeWeekly() {
     try {
-      const chatbotContainer = document.getElementById('chatbot-container');
-      if (chatbotContainer) {
-        chatbotContainer.style.display = 'block';
-        chatbotContainer.style.right = '0';
-        chatbotContainer.style.transform = 'translateX(0)';
-      } else {
-        // 폴백: 기존 버튼 트리거
-        const legacyBtn = document.getElementById('chatbot-fab');
-        if (legacyBtn && typeof legacyBtn.click === 'function') {
-          legacyBtn.click();
-        } else {
-          console.warn('챗봇을 열 수 없습니다.');
-        }
+      // 1) 전역 오프너
+      if (typeof window.openWeekly === 'function') {
+        window.openWeekly();
+        return;
       }
-    } catch (error) {
-      this.handleError(error, 'executeChatbot');
+      // 2) 커스텀 모달(#weekly-modal)
+      const custom = document.getElementById('weekly-modal');
+      if (custom) {
+        custom.removeAttribute('hidden');
+        requestAnimationFrame(() => custom.classList.add('show'));
+        return;
+      }
+      // 3) 부트스트랩 모달(#weeklyModal)
+      const bs = document.getElementById('weeklyModal');
+      if (bs && typeof bootstrap !== 'undefined' && typeof bootstrap.Modal === 'function') {
+        new bootstrap.Modal(bs).show();
+        return;
+      }
+      // 4) 레거시 버튼 트리거
+      const legacyBtn = document.getElementById('weekly-fab') || document.getElementById('knowhow-fab');
+      if (legacyBtn && typeof legacyBtn.click === 'function') {
+        legacyBtn.click();
+        return;
+      }
+      console.warn('weekly UI를 열 수 없습니다.');
+    } catch (e) {
+      this.handleError(e, 'executeWeekly');
     }
   }
 
-  // 에러 처리 및 복구
+  executeChatbot() {
+    try {
+      const container = document.getElementById('chatbot-container');
+      if (container) {
+        container.style.display = 'block';
+        container.style.right = '0';
+        container.style.transform = 'translateX(0)';
+      } else {
+        const legacyBtn = document.getElementById('chatbot-fab');
+        if (legacyBtn && typeof legacyBtn.click === 'function') legacyBtn.click();
+        else console.warn('챗봇을 열 수 없습니다.');
+      }
+    } catch (e) {
+      this.handleError(e, 'executeChatbot');
+    }
+  }
+
+  // ====== 에러/디버그/접근성 ======
+
   handleError(error, context) {
     console.error(`FAB Controller Error in ${context}:`, error);
-
-    // 상태 초기화
     this.isExpanded = false;
     this.fabContainer?.classList.remove('expanded');
     this.clearActiveAction();
-
-    // 사용자 알림(선택)
     this.announceToScreenReader('일시적인 오류가 발생했습니다. 다시 시도해 주세요.');
   }
 
-  // 디버그 모드
   enableDebugMode() {
     this.debugMode = true;
     console.log('FAB Debug Mode Enabled');
-
-    // 상태 변화 로깅
-    const originalSetActiveAction = this.setActiveAction.bind(this);
-    this.setActiveAction = function (action, itemElement) {
+    const orig = this.setActiveAction.bind(this);
+    this.setActiveAction = (action, el) => {
       console.log(`Setting active action: ${action}`);
-      return originalSetActiveAction(action, itemElement);
+      return orig(action, el);
     };
   }
 
-  // 접근성: 스크린 리더 알림
   announceToScreenReader(message) {
     try {
-      const announcement = document.createElement('div');
-      announcement.setAttribute('aria-live', 'polite');
-      announcement.setAttribute('aria-atomic', 'true');
-      announcement.style.position = 'absolute';
-      announcement.style.left = '-10000px';
-      announcement.style.width = '1px';
-      announcement.style.height = '1px';
-      announcement.style.overflow = 'hidden';
-      announcement.textContent = message;
-
-      document.body.appendChild(announcement);
-
-      setTimeout(() => {
-        document.body.removeChild(announcement);
-      }, 1000);
-    } catch (error) {
-      console.warn('스크린 리더 알림 중 오류:', error);
+      const el = document.createElement('div');
+      el.setAttribute('aria-live', 'polite');
+      el.setAttribute('aria-atomic', 'true');
+      el.style.position = 'absolute';
+      el.style.left = '-10000px';
+      el.style.width = '1px';
+      el.style.height = '1px';
+      el.style.overflow = 'hidden';
+      el.textContent = message;
+      document.body.appendChild(el);
+      setTimeout(() => { document.body.removeChild(el); }, 1000);
+    } catch (e) {
+      console.warn('스크린 리더 알림 중 오류:', e);
     }
   }
 }
