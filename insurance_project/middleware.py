@@ -15,7 +15,8 @@ from django.template import TemplateDoesNotExist
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
-#  A) /static/insurance_portal/** → 0826-5 … 브릿지
+#  A) 정적 브릿지: /static/insurance_portal/* 를 실제 존재하는 후보 경로에서 서빙
+#     (개발/클라우드 환경에서 STATICFILES 설정이 불완전해도 동작 보장)
 # ─────────────────────────────────────────────────────────────
 class PortalStaticBridgeMiddleware(MiddlewareMixin):
     URL_PREFIX = "/static/insurance_portal/"
@@ -35,23 +36,30 @@ class PortalStaticBridgeMiddleware(MiddlewareMixin):
             if f.exists() and f.is_file():
                 data = f.read_bytes()
                 ctype, _ = mimetypes.guess_type(str(f))
-                return data, ctype or "application/octet-stream"
+                if not ctype:
+                    # 기본값
+                    if f.suffix in {".js", ".mjs"}:
+                        ctype = "application/javascript; charset=utf-8"
+                    elif f.suffix == ".css":
+                        ctype = "text/css; charset=utf-8"
+                    else:
+                        ctype = "application/octet-stream"
+                return data, ctype
         return None, None
 
-    def __call__(self, request):
-        path = request.path
-        if path.startswith(self.URL_PREFIX):
-            rel = path[len(self.URL_PREFIX):]
-            data, ctype = self._try_open(rel)
-            if data is not None:
-                resp = HttpResponse(data, content_type=ctype)
-                resp["Cache-Control"] = "max-age=300, public"
-                return resp
-        return self.get_response(request)
-
+    def process_request(self, request):
+        path = (request.path or "")
+        if not path.startswith(self.URL_PREFIX):
+            return None
+        rel = path[len(self.URL_PREFIX):]
+        data, ctype = self._try_open(rel)
+        if data is None:
+            return None
+        return HttpResponse(data, content_type=ctype, status=200)
 
 # ─────────────────────────────────────────────────────────────
-#  B) HTML 응답에 원본 토글 CSS/JS 자동 주입
+#  B) HTML 응답에 원본 토글/포털 리소스 **존재하는 것만** 자동 주입
+#     ⚠️ noisy fallback의 원인인 loader_strict.js / loader.js 는 주입 대상에서 제외
 # ─────────────────────────────────────────────────────────────
 class PortalAutoInjectMiddleware(MiddlewareMixin):
     EXCLUDE_PREFIXES: tuple[str, ...] = ("/admin", "/static", "/media")
@@ -59,6 +67,7 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
 
     def __init__(self, get_response):
         super().__init__(get_response)
+        # CSS 후보 (존재하는 항목만 넣음)
         self.css_candidates: list[str] = [
             "/static/insurance_portal/css/portal.css",
             "/static/insurance_portal/portal.css",
@@ -66,12 +75,16 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
             "/static/insurance_portal/styles.css",
             "/static/insurance_portal/css/fab.css",
         ]
+        # JS 후보 (※ loader 계열 제외)
         self.js_candidates: list[str] = [
-            "/static/insurance_portal/loader_strict.js",
-            "/static/insurance_portal/loader.js",
-            "/static/insurance_portal/portal.js",
             "/static/insurance_portal/js/portal.js",
             "/static/insurance_portal/js/navigation_handler.js",
+            "/static/insurance_portal/js/fab-controller.js",
+            "/static/insurance_portal/js/guide.js",
+            "/static/insurance_portal/js/knowhow.js",
+            "/static/insurance_portal/js/claim_knowledge.js",
+            "/static/insurance_portal/js/chatbot.js",
+            "/static/insurance_portal/js/fault_answer.js",
         ]
 
     def _exists(self, url_path: str) -> bool:
@@ -89,60 +102,64 @@ class PortalAutoInjectMiddleware(MiddlewareMixin):
                 return True
         return False
 
-    def _pick_first(self, urls: Iterable[str]) -> str | None:
-        for u in urls:
-            if self._exists(u):
-                return u
-        return None
+    def _should_skip(self, request) -> bool:
+        path = (request.path or "")
+        return path.startswith(self.EXCLUDE_PREFIXES)
 
-    def __call__(self, request):
-        for p in self.EXCLUDE_PREFIXES:
-            if request.path.startswith(p):
-                return self.get_response(request)
-
-        resp = self.get_response(request)
-
-        ctype = resp.headers.get("Content-Type", "")
-        if resp.status_code != 200 or "text/html" not in ctype:
-            return resp
-        if not hasattr(resp, "content"):
-            return resp
-        if self.MARKER in resp.content:
-            return resp
-
-        css_url = self._pick_first(self.css_candidates)
-        js_url  = self._pick_first(self.js_candidates)
-        if not css_url and not js_url:
-            return resp
-
+    def process_response(self, request, response):
         try:
-            charset = resp.charset or "utf-8"
-        except Exception:
-            charset = "utf-8"
+            if self._should_skip(request):
+                return response
 
-        html = resp.content.decode(charset, errors="ignore")
-        inject_parts = ['\n', '<!-- __PORTAL_INJECTED__ -->', '\n']
-        if css_url:
-            inject_parts.append(f'<link rel="stylesheet" href="{css_url}?v=1" />\n')
-        if js_url:
-            inject_parts.append(f'<script src="{js_url}?v=1" defer></script>\n')
+            ctype = response.get("Content-Type", "") or ""
+            if response.status_code != 200 or "text/html" not in ctype.lower():
+                return response
+            if getattr(response, "streaming", False):
+                return response
 
-        payload = "".join(inject_parts)
-        if "</body>" in html:
-            html = html.replace("</body>", payload + "</body>")
-        else:
-            html += payload
+            body: bytes = response.content
+            if self.MARKER in body:
+                return response
 
-        resp.content = html.encode(charset)
-        if resp.has_header("Content-Length"):
-            resp.headers["Content-Length"] = str(len(resp.content))
-        return resp
+            try:
+                body_str = body.decode(response.charset or "utf-8", errors="ignore")
+            except Exception:
+                return response
 
+            idx = body_str.lower().rfind("</body>")
+            if idx == -1:
+                return response
+
+            css_tags: list[str] = []
+            for href in self.css_candidates:
+                if self._exists(href):
+                    css_tags.append(f'<link rel="stylesheet" href="{href}">')
+
+            js_tags: list[str] = []
+            for src in self.js_candidates:
+                if self._exists(src):
+                    js_tags.append(f'<script src="{src}"></script>')
+
+            if not css_tags and not js_tags:
+                return response
+
+            snippet = "\n".join(css_tags + js_tags) + "\n" + self.MARKER.decode()
+            new_body = body_str[:idx] + snippet + body_str[idx:]
+            response.content = new_body.encode(response.charset or "utf-8")
+            if response.has_header("Content-Length"):
+                response["Content-Length"] = str(len(response.content))
+            return response
+        except Exception as e:
+            logger.error("AutoInject error at %s: %s", getattr(request, "path", "?"), e)
+            return response
 
 # ─────────────────────────────────────────────────────────────
-#  C) 예외 로그 강화
+#  C) 예외 로깅
 # ─────────────────────────────────────────────────────────────
 class ExceptionLoggingMiddleware(MiddlewareMixin):
+    def __init__(self, get_response):
+        super().__init__(get_response)
+
     def __call__(self, request):
         try:
             return self.get_response(request)
@@ -151,42 +168,16 @@ class ExceptionLoggingMiddleware(MiddlewareMixin):
             traceback.print_exc()
             raise
 
-
 # ─────────────────────────────────────────────────────────────
-#  D) 폴백: 지정된 경로에서는 어떤 예외든 최소 HTML로 200 보장
-#     (정상 템플릿/뷰가 있으면 개입하지 않음)
+#  D) 폴백 페이지 (특정 경로에서 템플릿 누락/예외 시 최소 HTML 제공)
+#     ※ loader_strict 와 무관, 기존 동작 유지
 # ─────────────────────────────────────────────────────────────
 FALLBACK_PAGES: dict[str, str] = {
     "glossary": """<!doctype html><meta charset="utf-8">
     <title>용어집</title><h1>용어집</h1><p>템플릿을 찾을 수 없어 최소 페이지로 표시합니다.</p>""",
-    "login": """<!doctype html><meta charset="utf-8">
-    <title>로그인</title><h1>로그인</h1>
-    <form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="">
-    <label>아이디 <input name="username"></label><br>
-    <label>비밀번호 <input type="password" name="password"></label><br>
-    <button type="submit">로그인</button></form>""",
-    "signup": """<!doctype html><meta charset="utf-8">
-    <title>회원가입</title><h1>회원가입</h1>
-    <form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="">
-    <label>아이디 <input name="username"></label><br>
-    <label>비밀번호 <input type="password" name="password1"></label><br>
-    <label>비밀번호 확인 <input type="password" name="password2"></label><br>
-    <button type="submit">가입</button></form>""",
-    "insurance_recommendation": """<!doctype html><meta charset="utf-8">
-    <title>AI 약관 검색</title><h1>AI 약관 검색</h1>
-    <form id="f"><input id="q" placeholder="질문을 입력하세요">
-    <button>검색</button></form><pre id="out"></pre>
-    <script>
-    document.getElementById('f').onsubmit = async (e) => {
-      e.preventDefault();
-      const r = await fetch('/insurance-recommendation/', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({query: document.getElementById('q').value})
-      });
-      try { const j = await r.json(); document.getElementById('out').textContent = JSON.stringify(j, null, 2); }
-      catch (err) { document.getElementById('out').textContent = '응답 형식 오류'; }
-    };
-    </script>""",
+    "login": """<!doctype html><meta charset="utf-8"><title>로그인</title><h1>로그인</h1>""",
+    "signup": """<!doctype html><meta charset="utf-8"><title>회원가입</title><h1>회원가입</h1>""",
+    "insurance_recommendation": """<!doctype html><meta charset="utf-8"><title>추천</title><div id="out"></div>""",
 }
 
 def _fallback_key_from_path(path: str) -> str | None:
@@ -201,10 +192,9 @@ def _fallback_key_from_path(path: str) -> str | None:
     return None
 
 class TemplateFallbackMiddleware(MiddlewareMixin):
-    """
-    - TemplateDoesNotExist는 물론, 지정 경로의 모든 예외에 대해 폴백 HTML 제공.
-    - 정상 템플릿/뷰가 있으면 절대 개입하지 않음.
-    """
+    def __init__(self, get_response):
+        super().__init__(get_response)
+
     def __call__(self, request):
         try:
             return self.get_response(request)
