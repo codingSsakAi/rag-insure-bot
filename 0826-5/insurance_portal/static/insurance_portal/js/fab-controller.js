@@ -31,10 +31,9 @@ class FloatingFABController {
         return;
       }
 
-      // (변경) 포털 fallback만 비활성화
+      // 포털 fallback(ip-*)만 숨김. 기존 토글(weekly 등)은 건드리지 않음
       this.disableLegacyFABs();
-      // (변경) 사이드 토글 이벤트 건드리지 않음
-      this.preventEventConflicts();
+      this.preventEventConflicts(); // no-op
       this.initModalStateTracking();
       
       // 기본 초기화
@@ -318,7 +317,7 @@ class FloatingFABController {
   initModalStateTracking() {
     try {
       // Bootstrap 모달 이벤트 감지
-      const bootstrapModals = ['guideModal', 'knowhowModal'];
+      const bootstrapModals = ['guideModal', 'knowhowModal', 'weeklyModal'];
       
       bootstrapModals.forEach(modalId => {
         const modalElement = document.getElementById(modalId);
@@ -333,36 +332,27 @@ class FloatingFABController {
         }
       });
 
-      // 커스텀 모달 감지 (claim-knowledge)
-      const observer = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => {
-          if (mutation.type === 'attributes' && mutation.attributeName === 'hidden') {
-            const target = mutation.target;
-            if (target.id === 'claim-knowledge-modal') {
-              if (!target.hasAttribute('hidden')) {
-                this.syncActiveState('claim-knowledge');
-              } else {
-                this.clearActiveAction();
+      // 커스텀/비부트스트랩 모달/패널 감지
+      const observeIds = ['claim-knowledge-modal', 'knowhow-modal', 'weekly-modal'];
+      observeIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            if (mutation.type === 'attributes') {
+              const t = mutation.target;
+              if (mutation.attributeName === 'hidden') {
+                if (!t.hasAttribute('hidden')) this.syncActiveState(this.getActionByModalId(id));
+                else this.clearActiveAction();
+              }
+              if (mutation.attributeName === 'class') {
+                if (t.classList.contains('show')) this.syncActiveState(this.getActionByModalId(id));
               }
             }
-          }
-          
-          if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-            const target = mutation.target;
-            if (target.id === 'claim-knowledge-modal' && target.classList.contains('show')) {
-              this.syncActiveState('claim-knowledge');
-            }
-          }
+          });
         });
+        observer.observe(el, { attributes: true, attributeFilter: ['hidden', 'class'] });
       });
-
-      const claimModal = document.getElementById('claim-knowledge-modal');
-      if (claimModal) {
-        observer.observe(claimModal, { 
-          attributes: true, 
-          attributeFilter: ['hidden', 'class'] 
-        });
-      }
 
       // 챗봇 패널 상태 감지
       const chatbotContainer = document.getElementById('chatbot-container');
@@ -385,18 +375,37 @@ class FloatingFABController {
           attributeFilter: ['style'] 
         });
       }
+
+      // 주간 패널(사이드 패널) 감지
+      const weeklyPanel = document.getElementById('weekly-panel') || document.getElementById('weekly-container');
+      if (weeklyPanel) {
+        const weeklyObserver = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            if (mutation.type === 'attributes' && mutation.attributeName === 'style') {
+              const display = window.getComputedStyle(weeklyPanel).display;
+              if (display !== 'none') this.syncActiveState('weekly');
+              else this.clearActiveAction();
+            }
+          });
+        });
+        weeklyObserver.observe(weeklyPanel, { attributes: true, attributeFilter: ['style'] });
+      }
     } catch (error) {
       this.handleError(error, 'initModalStateTracking');
     }
   }
 
-  // 모달 ID로 액션 타입 찾기
+  // 모달/패널 ID로 액션 타입 찾기
   getActionByModalId(modalId) {
     const modalActionMap = {
       'guideModal': 'guide',
       'knowhowModal': 'knowhow',
       'claim-knowledge-modal': 'claim-knowledge',
-      'chatbot-container': 'chatbot'
+      'chatbot-container': 'chatbot',
+      'weeklyModal': 'weekly',
+      'weekly-modal': 'weekly',
+      'weekly-panel': 'weekly',
+      'weekly-container': 'weekly'
     };
     return modalActionMap[modalId];
   }
@@ -419,11 +428,11 @@ class FloatingFABController {
     }
   }
 
-  // (변경) 기존 FAB 버튼들 비활성화 → **포털 fallback만** 숨김
+  // 포털 fallback만 숨김
   disableLegacyFABs() {
     try {
       const legacySelectors = [
-        '#ip-fab',       // 포털 로더가 만든 햄버거
+        '#ip-fab',       // 로더가 만든 햄버거
         '#ip-panel',
         '#ip-overlay'
       ];
@@ -443,24 +452,21 @@ class FloatingFABController {
     }
   }
 
-  // (변경) 기존 이벤트 리스너와의 충돌 방지 → **no-op**
+  // 기존 이벤트 충돌 방지 → no-op (기존 토글/weekly 이벤트 보존)
   preventEventConflicts() {
     try {
       // 의도적으로 아무 것도 하지 않음.
-      // 사이드 토글(weekly/guide/knowhow/chatbot 등) 기존 이벤트를 그대로 둡니다.
     } catch (error) {
       console.warn('이벤트 충돌 방지 중 오류:', error);
     }
   }
 
-  // 향상된 기능 실행 메서드
+  // 기능 실행
   executeActionEnhanced(action) {
     try {
-      // 액션 실행 로깅
       if (this.debugMode) {
         console.log(`FAB Action executed: ${action}`);
       }
-      
       switch (action) {
         case 'claim-knowledge':
           this.executeClaimKnowledge();
@@ -473,6 +479,9 @@ class FloatingFABController {
           break;
         case 'chatbot':
           this.executeChatbot();
+          break;
+        case 'weekly': // ★ 복구: weekly 지원
+          this.executeWeekly();
           break;
         default:
           console.warn(`Unknown action: ${action}`);
@@ -505,43 +514,39 @@ class FloatingFABController {
 
   executeGuide() {
     try {
-        // 전역 오프너가 있으면 데이터 로딩+모달 표시를 한 번에
-        if (typeof window.openGuide === 'function') {
+      if (typeof window.openGuide === 'function') {
         window.openGuide();
         return;
-        }
-        // 폴백: 기존 버튼 클릭 또는 단순 모달 show
-        const guideModal = document.getElementById('guideModal');
-        if (guideModal && typeof bootstrap !== 'undefined') {
+      }
+      const guideModal = document.getElementById('guideModal');
+      if (guideModal && typeof bootstrap !== 'undefined' && typeof bootstrap.Modal === 'function') {
         const modal = new bootstrap.Modal(guideModal);
         modal.show();
-        } else {
+      } else {
         const legacyBtn = document.getElementById('guide-fab');
         if (legacyBtn && typeof legacyBtn.click === 'function') legacyBtn.click();
         else console.warn('가이드 모달을 열 수 없습니다.');
-        }
+      }
     } catch (error) {
-        this.handleError(error, 'executeGuide');
+      this.handleError(error, 'executeGuide');
     }
   }
 
   executeKnowhow() {
     try {
-        // 권장: 전역 오프너 사용
-        if (typeof window.openKnowhow === 'function') {
+      if (typeof window.openKnowhow === 'function') {
         window.openKnowhow();
         return;
-        }
-        // 폴백: 직접 모달 표시 (커스텀 모달)
-        const el = document.getElementById('knowhow-modal'); // <-- 하이픈 ID로 수정
-        if (el) {
+      }
+      const el = document.getElementById('knowhow-modal');
+      if (el) {
         el.removeAttribute('hidden');
         requestAnimationFrame(() => el.classList.add('show'));
-        } else {
+      } else {
         console.warn('knowhow-modal을 찾을 수 없습니다.');
-        }
+      }
     } catch (e) {
-        this.handleError(e, 'executeKnowhow');
+      this.handleError(e, 'executeKnowhow');
     }
   }
 
@@ -553,7 +558,6 @@ class FloatingFABController {
         chatbotContainer.style.right = '0';
         chatbotContainer.style.transform = 'translateX(0)';
       } else {
-        // 폴백: 기존 버튼 트리거
         const legacyBtn = document.getElementById('chatbot-fab');
         if (legacyBtn && typeof legacyBtn.click === 'function') {
           legacyBtn.click();
@@ -563,6 +567,44 @@ class FloatingFABController {
       }
     } catch (error) {
       this.handleError(error, 'executeChatbot');
+    }
+  }
+
+  // ★ 추가: weekly 실행
+  executeWeekly() {
+    try {
+      // 1) 권장: 전역 오프너
+      if (typeof window.openWeekly === 'function') {
+        window.openWeekly();
+        return;
+      }
+      // 2) Bootstrap 모달
+      const weeklyModal = document.getElementById('weeklyModal') || document.getElementById('weekly-modal');
+      if (weeklyModal) {
+        if (typeof bootstrap !== 'undefined' && typeof bootstrap.Modal === 'function') {
+          new bootstrap.Modal(weeklyModal).show();
+        } else {
+          weeklyModal.removeAttribute('hidden');
+          requestAnimationFrame(() => weeklyModal.classList.add('show'));
+        }
+        return;
+      }
+      // 3) 사이드 패널
+      const weeklyPanel = document.getElementById('weekly-panel') || document.getElementById('weekly-container');
+      if (weeklyPanel) {
+        weeklyPanel.style.display = 'block';
+        weeklyPanel.classList.add('open', 'show');
+        return;
+      }
+      // 4) 레거시 트리거 버튼
+      const legacyBtn = document.getElementById('weekly-fab') || document.querySelector('[data-weekly-trigger]');
+      if (legacyBtn && typeof legacyBtn.click === 'function') {
+        legacyBtn.click();
+        return;
+      }
+      console.warn('weekly를 실행할 대상을 찾을 수 없습니다.');
+    } catch (error) {
+      this.handleError(error, 'executeWeekly');
     }
   }
 
