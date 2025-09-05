@@ -10,39 +10,52 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse, JsonResponse, FileResponse, Http404
+
+from django.http import FileResponse, Http404
 from django.views.decorators.http import require_http_methods
 from django.db import IntegrityError
 from django.contrib.auth import get_user_model
 from django.core.paginator import Paginator
+from django.http import (
+    HttpRequest, HttpResponse, JsonResponse,
+    FileResponse, Http404,
+)
 from django.shortcuts import render, redirect
 from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.views.decorators.http import require_POST
 from django.template import TemplateDoesNotExist
 from django.urls import reverse, NoReverseMatch
+
+# 인증/계정
 from django.contrib import messages
 from django.contrib.auth import login, logout
 from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.decorators import login_required
-from django.db.models import Q
 
+# 아카이브 폼/모델/검색/처리기
 from .forms import CustomUserCreationForm, EmailPasswordChangeForm
 from .models import GlossaryTerm
+from django.db.models import Q
 from .pdf_processor import EnhancedPDFProcessor
 from .pinecone_search import retrieve_insurance_clauses
+
 from insurance_app.utils.buckets import BUCKETS, infer_bucket
-import logging
-logger = logging.getLogger(__name__)
 
-DOCS_DIR = Path(__file__).resolve().parent / "documents"
-DATA_DIR = Path(__file__).resolve().parent / "data"
-
+# ---------------------------------------------------------------------
+# (중요) 아카이브 내 기존 llm_client 재사용: 다양한 함수/클래스 시그니처 자동 탐색
+# ---------------------------------------------------------------------
 def call_llm_via_project_client(prompt: str) -> str:
+    """
+    프로젝트에 포함된 llm_client 모듈을 '있는 그대로' 재사용하기 위한 어댑터.
+    """
     try:
-        from . import llm_client as L
+        from . import llm_client as L  # 아카이브의 기존 모듈
     except Exception as e:
         return f"일반 요약/정리 답변 생성 모듈을 불러오지 못했습니다: {e}"
+
     last_err: Optional[Exception] = None
+
+    # 1) 함수형 API 후보들
     func_names = [
         "llm_answer_ko", "llm_answer", "ask_ko", "ask", "chat", "answer",
         "generate", "complete", "respond", "response"
@@ -51,14 +64,16 @@ def call_llm_via_project_client(prompt: str) -> str:
         fn = getattr(L, name, None)
         if callable(fn):
             try:
-                return fn(prompt)
+                return fn(prompt)  # 인자 1개
             except TypeError:
                 try:
-                    return fn(prompt=prompt)
+                    return fn(prompt=prompt)  # 키워드 인자
                 except Exception as e:
                     last_err = e
             except Exception as e:
                 last_err = e
+
+    # 2) 클래스형 API 후보들 (무인자 생성자 가정)
     cls_names = ["LLMClient", "OpenAIClient", "Client"]
     method_names = ["ask_ko", "ask", "chat", "answer", "generate", "complete", "respond"]
     for cls_name in cls_names:
@@ -82,44 +97,68 @@ def call_llm_via_project_client(prompt: str) -> str:
                         last_err = e
                 except Exception as e:
                     last_err = e
+
+    # 3) 모두 실패 시
     msg = "일반 요약/정리 답변 생성 중 오류가 발생했습니다. LLM 설정(키/모델) 또는 llm_client API를 확인해주세요."
     if last_err:
         msg += f" 상세: {last_err}"
     return msg
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 문서 경로 추정 유틸: 회사/파일.pdf 상대경로 생성
+# ────────────────────────────────────────────────────────────────────────────────
+# ✅ insurance_app/documents 경로
+DOCS_DIR = Path(__file__).resolve().parent / "documents"
+DATA_DIR = Path(__file__).resolve().parent / "data"
 
 def _norm_key_ko(s: str) -> str:
     t = unicodedata.normalize("NFKC", s or "")
     return re.sub(r"\s+", "", t).lower()
 
 def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
+    """
+    DOCS_DIR(insurance_app/documents) 기준: 회사명/파일 힌트로 PDF 상대경로 추측
+    """
     try:
         if not DOCS_DIR.exists():
             return None
     except Exception:
         return None
+
+    # 1) file_hint가 .pdf면 우선 확인
     if file_hint:
         hint = (file_hint or "").strip()
         if hint.lower().endswith(".pdf"):
+            # 직접 파일 경로
             p = (DOCS_DIR / hint)
             if p.exists():
                 return str(p.relative_to(DOCS_DIR)).replace("\\", "/")
+            # 회사 폴더 안에서 찾기
             for d in DOCS_DIR.iterdir():
                 if d.is_dir():
                     cand = d / hint
                     if cand.exists():
                         return f"{d.name}/{hint}"
+
+    # 2) 회사 폴더명 일치 (정확한 매칭)
     key = _norm_key_ko(company)
     if key:
         for d in DOCS_DIR.iterdir():
             if d.is_dir() and _norm_key_ko(d.name) == key:
+                # 해당 폴더에서 PDF 파일 찾기
                 pdfs = list(d.glob("*.pdf"))
                 if pdfs:
+                    # 회사명과 같은 이름의 PDF를 우선적으로 찾기
                     for pdf in pdfs:
                         if _norm_key_ko(pdf.stem) == key:
                             return f"{d.name}/{pdf.name}"
+                    # 없으면 첫 번째 PDF
                     return f"{d.name}/{pdfs[0].name}"
+
+    # 3) 느슨한 탐색 (부분 매칭)
     loose = _norm_key_ko(company or file_hint)
     if loose:
+        # 폴더명에서 부분 매칭
         for d in DOCS_DIR.iterdir():
             if d.is_dir() and loose in _norm_key_ko(d.name):
                 pdfs = list(d.glob("*.pdf"))
@@ -128,6 +167,7 @@ def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
                         if loose in _norm_key_ko(pdf.stem):
                             return f"{d.name}/{pdf.name}"
                     return f"{d.name}/{pdfs[0].name}"
+        # 파일명에서 직접 검색
         for f in DOCS_DIR.rglob("*.pdf"):
             stem = _norm_key_ko(f.stem)
             if loose in stem:
@@ -137,6 +177,9 @@ def _guess_pdf_relpath(company: str = "", file_hint: str = "") -> Optional[str]:
                     pass
     return None
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Glossary JSON 로딩 유틸 (DB 비어있을 때도 페이지/API가 작동하도록)
+# ────────────────────────────────────────────────────────────────────────────────
 def _iter_glossary_json_files() -> List[Path]:
     base = Path(__file__).resolve().parent.parent
     data_dir = base / "insurance_app" / "data"
@@ -180,6 +223,9 @@ def _load_glossary_json() -> List[Dict[str, Any]]:
             continue
     return out
 
+# ────────────────────────────────────────────────────────────────────────────────
+# 검색 결과 정제/요약(노이즈 차단 강화)
+# ────────────────────────────────────────────────────────────────────────────────
 def _normalize_spaces(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip())
 
@@ -197,7 +243,7 @@ def dedup_matches_by_tuple(matches: List[Dict[str, Any]]) -> List[Dict[str, Any]
     seen, out = set(), []
     for r in matches:
         k = _make_tuple_key(r)
-        if k in seen:
+        if k in seen: 
             continue
         seen.add(k)
         out.append(r)
@@ -218,11 +264,13 @@ def ensure_not_overpruned(orig: List[Dict[str, Any]], cur: List[Dict[str, Any]],
         return orig
     return cur
 
+# 토픽 키워드
 _DUI_KEYS   = ["음주", "무면허", "약물", "마약", "뺑소니", "사고부담금", "자기부담금", "면책"]
 _DISC_KEYS  = ["무사고", "할인", "할인율", "마일리지", "주행거리", "후할인", "정산"]
 _FAM_KEYS   = ["가족", "가족운전자", "운전자범위", "한정", "부부", "자녀", "배우자", "형제자매"]
 _THEFT_KEYS = ["도난", "절도", "강도", "절취", "도난손해", "차량도난", "무단사용", "침입", "손괴", "파손", "분실"]
 
+# "약관형" 판별용 광의 키워드
 _POLICY_HINTS = set(_DUI_KEYS + _DISC_KEYS + _FAM_KEYS + _THEFT_KEYS + [
     "약관","특별약관","보상","담보","면책","대인","대물","자차","자기신체","의무보험","보험금","청구","배상"
 ])
@@ -252,11 +300,12 @@ def _looks_like_table_fragment(s: str) -> bool:
     if re.fullmatch(r"[○◯●◎△▲▽▼□■◇◆✕×･·\-\–—\|]+", t): return True
     return False
 
+# 문장 분리
 def split_sentences(text: str) -> List[str]:
     if not text: return []
     t = unicodedata.normalize("NFKC", text)
-    t = re.sub(r"([\.!?])\s*", r"\1§", t)
-    t = re.sub(r"(다|요)(?=[\s\)\]\}\"\']|$)", r"\1§", t)
+    t = re.sub(r"([\.!?])\s*", r"\1§", t)                 # 영문 구두점 뒤
+    t = re.sub(r"(다|요)(?=[\s\)\]\}\"\']|$)", r"\1§", t)  # 한국어 어말어미 뒤
     parts = [seg.strip() for seg in t.split("§") if seg and seg.strip()]
     return parts
 
@@ -342,25 +391,13 @@ def _as_page_int(val) -> Optional[int]:
     except Exception:
         return None
 
-def _safe_float(x, default: float = 0.0) -> float:
-    try:
-        if x is None:
-            return default
-        if isinstance(x, (int, float)):
-            return float(x)
-        s = str(x).strip()
-        if s == "" or s.lower() in {"nan", "none"}:
-            return default
-        return float(s)
-    except Exception:
-        return default
-
 def build_answer(question: str, matches: List[Dict[str, Any]], max_refs: int = 5, answer_mode: str = "normal") -> Dict[str, Any]:
     if not matches:
         return {
             "answer": f"질문: {question}\n\n관련 약관을 찾지 못했습니다. 핵심 키워드(예: 면책, 음주, 도난 등)를 포함해 다시 질문해 주세요.",
             "references": [], "results": []
         }
+
     triples = []
     for r in matches:
         company = r.get("company") or r.get("document") or "보험사"
@@ -370,10 +407,12 @@ def build_answer(question: str, matches: List[Dict[str, Any]], max_refs: int = 5
         text = _normalize_spaces(r.get("text") or r.get("chunk") or "")
         if text:
             triples.append((company, page_str, text))
+
     picked = clean_and_pick_sentences(question, triples, max_sent_total=12)
     max_bul = 3 if answer_mode == "normal" else (2 if answer_mode == "brief" else 0)
     bullets_raw = [st for _, _, _, st in picked]
     bullets = to_bullet_style(question, bullets_raw, max_bul)
+
     used_keys = {_norm_text_for_key(b) for b in bullets}
     grounds = []
     for _, _, _, st in picked:
@@ -381,6 +420,7 @@ def build_answer(question: str, matches: List[Dict[str, Any]], max_refs: int = 5
         if _accept_sentence(st, _topic_for_query(question)):
             grounds.append("· " + st)
             if len(grounds) >= 5: break
+
     refs = []
     seen_ref = set()
     for r in matches:
@@ -388,14 +428,21 @@ def build_answer(question: str, matches: List[Dict[str, Any]], max_refs: int = 5
         if k in seen_ref: continue
         seen_ref.add(k)
         page_i = _as_page_int(r.get("page"))
+        # ⬇️ 점수 파싱 안전화
+        try:
+            score_val = float(r.get("rerank_score", r.get("score", 0.0)))
+        except Exception:
+            score_val = 0.0
+
         refs.append({
             "uid": r.get("uid"),
             "company": r.get("company", ""),
             "file": r.get("file") or r.get("path") or r.get("source") or "",
             "page": page_i if page_i is not None else (r.get("page") or ""),
-            "score": _safe_float(r.get("rerank_score", r.get("score", 0.0)), 0.0)
+            "score": score_val
         })
         if len(refs) >= max_refs: break
+
     header = f"질문: {question}"
     parts = [header]
     if max_bul > 0 and bullets:
@@ -403,6 +450,7 @@ def build_answer(question: str, matches: List[Dict[str, Any]], max_refs: int = 5
     if grounds:
         parts.append("근거 문장:\n" + "\n".join(grounds))
     answer_text = "\n\n".join(parts).strip()
+
     slim_results = []
     for r in matches[:max_refs]:
         page_i = _as_page_int(r.get("page"))
@@ -414,8 +462,12 @@ def build_answer(question: str, matches: List[Dict[str, Any]], max_refs: int = 5
             "chunk": r.get("text") or r.get("chunk") or "",
             "chunk_idx": r.get("chunk_idx") or r.get("index") or ""
         })
+
     return {"answer": answer_text, "references": refs, "results": slim_results}
 
+# ────────────────────────────────────────────────────────────────────────────────
+# 자연어 결론
+# ────────────────────────────────────────────────────────────────────────────────
 def _sanitize_korean_text(text: str) -> str:
     if not text: return ""
     t = unicodedata.normalize("NFKC", text)
@@ -468,21 +520,30 @@ def _format_natural_korean_answer(query: str, raw_answer: str, references: List[
     t = _sanitize_korean_text(raw_answer or "")
     t = re.sub(r"^\s*(핵심\s*요약|근거\s*문장|근거)\s*:?\s*$", "", t, flags=re.M)
     t = re.sub(r"^\s*질문\s*:\s*.*$", "", t, flags=re.M)
+
     lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
     if answer_mode == "clauses":
         return "\n".join(lines[:10])
+
     body_text = " ".join(lines)
     topic = _detect_topic(query, body_text)
+
     if topic == "family":
-        return ("결론: '가족운전자 한정'(가족 특약)을 가입하면 약정된 가족 범위(예: 본인·배우자·자녀·부모 등) 내 운전자에 한해 보장이 적용되고, 가족 범위 밖 운전자의 사고는 보상 대상에서 제외됩니다. 회사·상품별로 가족의 정의와 예외, 제출서류(가족관계증명서 등)가 다를 수 있으니 해당 약관 본문을 확인하세요.")
+        return ("결론: '가족운전자 한정'(가족 특약)을 가입하면 약정된 가족 범위(예: 본인·배우자·자녀·부모 등) 내 운전자에 한해 보장이 적용되고, "
+                "가족 범위 밖 운전자의 사고는 보상 대상에서 제외됩니다. 회사·상품별로 가족의 정의와 예외, 제출서류(가족관계증명서 등)가 다를 수 있으니 해당 약관 본문을 확인하세요.")
     if topic == "dui":
         pages = _page_list_text(references); ref_hint = (f" (예: p.{pages})" if pages else "")
-        return ("결론: 음주·약물 또는 무면허 운전 중 발생한 사고는 약관상 보상 제외(면책) 또는 제한 보상에 해당하는 경우가 많습니다. 다만 의무보험이나 일부 특별약관으로 최소한의 보상이 이뤄질 수 있으며, 사고부담금/자기부담금이 부과될 수 있습니다."+ref_hint)
+        return ("결론: 음주·약물 또는 무면허 운전 중 발생한 사고는 약관상 보상 제외(면책) 또는 제한 보상에 해당하는 경우가 많습니다. "
+                "다만 의무보험이나 일부 특별약관으로 최소한의 보상이 이뤄질 수 있으며, 사고부담금/자기부담금이 부과될 수 있습니다." + ref_hint)
     if topic == "discount":
-        return ("결론: 무사고 할인은 특별약관 가입 시점에 1회 적용되며, 계약 중 점수 변경으로 추가 할인은 적용되지 않습니다. 또한 1년 미만 계약 등 일부 조건에서는 가입이 제한될 수 있습니다. 자세한 요건은 회사별 보통·특별약관을 확인하세요.")
+        return ("결론: 무사고 할인은 특별약관 가입 시점에 1회 적용되며, 계약 중 점수 변경으로 추가 할인은 적용되지 않습니다. "
+                "또한 1년 미만 계약 등 일부 조건에서는 가입이 제한될 수 있습니다. 자세한 요건은 회사별 보통·특별약관을 확인하세요.")
     if topic == "theft":
         pages = _page_list_text(references); ref_hint = (f" (예: p.{pages})" if pages else "")
-        return ("결론: 차량 '도난/절도' 손해는 보통 '자기차량손해(자차)' 또는 '도난손해' 관련 특별약관으로 담보됩니다. 도난 사실 확인서류(경찰신고 접수 등) 제출이 필요하며, 보관/열쇠관리 소홀, 가족·동거인 등의 절취, 불법주정차 중 방치 등은 면책될 수 있습니다. 감가 및 약정 자기부담금이 적용됩니다."+ref_hint)
+        return ("결론: 차량 '도난/절도' 손해는 보통 '자기차량손해(자차)' 또는 '도난손해' 관련 특별약관으로 담보됩니다. "
+                "도난 사실 확인서류(경찰신고 접수 등) 제출이 필요하며, 보관/열쇠관리 소홀, 가족·동거인 등의 절취, 불법주정차 중 방치 등은 면책될 수 있습니다. "
+                "감가 및 약정 자기부담금이 적용됩니다." + ref_hint)
+
     bullets = [re.sub(r"^[·•\-\*]\s*", "", ln) for ln in lines if re.match(r"^[·•\-\*]\s*", ln)]
     plain   = [ln for ln in lines if not re.match(r"^[·•\-\*]\s*", ln)]
     paras: List[str] = []
@@ -491,6 +552,9 @@ def _format_natural_korean_answer(query: str, raw_answer: str, references: List[
     out = " ".join(paras).strip()
     return out or (t[:500] + ("…" if len(t) > 500 else ""))
 
+# ────────────────────────────────────────────────────────────────────────────────
+# (NEW) 의도 라우팅: 약관형 vs 일반형
+# ────────────────────────────────────────────────────────────────────────────────
 _GENERAL_HINTS = re.compile(r"(정리|요약|개요|설명해줘|비교|차이|가이드|원리|왜|무엇|어떻게)")
 _REF_PATTERN   = re.compile(r"(?:^|\s)(결론\s*:|근거\s*:|근거\s*문장|p\.\d{1,4})", re.I)
 
@@ -507,6 +571,9 @@ def detect_intent_for_router(q: str, force: Optional[str] = None) -> str:
         return "policy"
     return "general"
 
+# ────────────────────────────────────────────────────────────────────────────────
+# PDF 안전 서빙(앱 내부 documents/**)
+# ────────────────────────────────────────────────────────────────────────────────
 def _safe_join_docs(relpath: str) -> Path:
     clean = (relpath or "").replace("\\", "/")
     clean = re.sub(r"^\/*", "", clean)
@@ -516,6 +583,10 @@ def _safe_join_docs(relpath: str) -> Path:
     return target
 
 def serve_policy_pdf(request: HttpRequest, relpath: str):
+    """
+    앱 내부 insurance_app/documents/** 에 있는 PDF를 안전하게 서빙.
+    URL 예: /docs/삼성화재/자가용_약관.pdf#page=123
+    """
     fp = _safe_join_docs(relpath)
     if not fp.exists() or fp.suffix.lower() != ".pdf":
         raise Http404("Not found")
@@ -524,6 +595,9 @@ def serve_policy_pdf(request: HttpRequest, relpath: str):
     except Exception:
         raise Http404("Not found")
 
+# ────────────────────────────────────────────────────────────────────────────────
+# 페이지: 홈/인증/마이페이지
+# ────────────────────────────────────────────────────────────────────────────────
 def home(request: HttpRequest) -> HttpResponse:
     processor = EnhancedPDFProcessor()
     context = {
@@ -543,6 +617,7 @@ def signup(request: HttpRequest) -> HttpResponse:
         if form.is_valid():
             User = get_user_model()
             username = (form.cleaned_data.get("username") or "").strip()
+
             if username and User.objects.filter(username=username).exists():
                 form.add_error("username", "이미 사용 중인 아이디입니다.")
                 messages.error(request, "이미 사용 중인 아이디입니다. 다른 아이디를 입력해 주세요.")
@@ -591,6 +666,9 @@ def mypage(request: HttpRequest) -> HttpResponse:
         form = EmailPasswordChangeForm(user=request.user, instance=request.user)
     return render(request, 'insurance_app/mypage.html', {'form': form})
 
+# ────────────────────────────────────────────────────────────────────────────────
+# 추천 페이지/API
+# ────────────────────────────────────────────────────────────────────────────────
 @login_required
 def recommend_insurance(request: HttpRequest) -> HttpResponse:
     if request.method == 'POST':
@@ -624,6 +702,9 @@ def recommend_insurance(request: HttpRequest) -> HttpResponse:
         }
         return render(request, 'insurance_app/recommend.html', context)
 
+# ────────────────────────────────────────────────────────────────────────────────
+# 챗봇 RAG + LLM 하이브리드 엔드포인트
+# ────────────────────────────────────────────────────────────────────────────────
 @csrf_exempt
 def insurance_recommendation(request: HttpRequest) -> HttpResponse:
     if request.method != 'POST':
@@ -636,144 +717,129 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
         return render(request, 'insurance_app/recommendation.html', context)
 
     try:
-        # --- 입력 파싱 ---
+        data = json.loads(request.body.decode('utf-8'))
+    except Exception:
+        return JsonResponse({'success': False, 'error': '잘못된 요청 본문입니다.'}, status=400)
+
+    query: str = (data.get('query') or data.get('question') or "").strip()
+    company_name: Optional[str] = data.get('company')
+    answer_mode: str = (data.get('answer_mode') or "normal").strip().lower()
+    top_k: int = int(data.get("top_k") or 12)
+    cand_k: int = max(2 * top_k, 20)
+
+    if not query:
+        return JsonResponse({'success': False, 'error': '질문을 입력해주세요.'}, status=400)
+
+    # 1) 라우팅 결정 (강제옵션: force_mode=policy|general)
+    force_mode = (data.get("force_mode") or "").strip().lower() or None
+    intent = detect_intent_for_router(query, force=force_mode)
+
+    def _make_pdf_url(relpath: Optional[str], page: Optional[int], request: HttpRequest) -> Optional[str]:
+        if not relpath:
+            return None
+        # ⬇️ URL reverse 실패 시 HTML 500 방지
         try:
-            data = json.loads(request.body.decode('utf-8'))
-        except Exception as e:
-            return JsonResponse({'success': False, 'error': f'잘못된 요청 본문입니다: {e}'}, status=400)
+            base = request.build_absolute_uri(
+                reverse('insurance_app:serve_policy_pdf', kwargs={'relpath': relpath})
+            )
+        except NoReverseMatch:
+            return None
+        if page:
+            return f"{base}#page={int(page)}"
+        return base
 
-        query: str = (data.get('query') or data.get('question') or "").strip()
-        company_name: Optional[str] = data.get('company')
-        answer_mode: str = (data.get('answer_mode') or "normal").strip().lower()
-        top_k: int = int(data.get("top_k") or 12)
-        cand_k: int = max(2 * top_k, 20)
-        if not query:
-            return JsonResponse({'success': False, 'error': '질문을 입력해주세요.'}, status=400)
-
-        # --- 라우팅 결정 (강제 옵션 포함) ---
-        force_mode = (data.get("force_mode") or "").strip().lower() or None
-        intent = detect_intent_for_router(query, force=force_mode)
-
-        # --- URL 생성 헬퍼 (reverse 실패 무시) ---
-        from django.urls import NoReverseMatch
-        def _make_pdf_url(relpath: Optional[str], page: Optional[int]) -> Optional[str]:
-            if not relpath:
-                return None
-            try:
-                base = request.build_absolute_uri(
-                    reverse('insurance_app:serve_policy_pdf', kwargs={'relpath': relpath})
-                )
-            except NoReverseMatch:
-                try:
-                    base = request.build_absolute_uri(
-                        reverse('serve_policy_pdf', kwargs={'relpath': relpath})
-                    )
-                except Exception:
-                    return None
-            except Exception:
-                return None
-            return f"{base}#page={int(page)}" if page else base
-
-        # --- 약관형(RAG) ---
-        if intent == "policy" or answer_mode == "clauses":
-            try:
-                # ① 검색
-                matches = retrieve_insurance_clauses(
-                    query=query, top_k=top_k, company=company_name,
-                    candidate_k=cand_k, min_score=0.0
-                )
-                # ② 정제
-                orig_matches = matches
-                matches = dedup_matches_by_tuple(matches)
-                matches = fuzzy_dedup_matches(matches, threshold=0.965, window=80)
-                matches = ensure_not_overpruned(orig_matches, matches, min_ratio=0.35, min_count=5)
-                # ③ 요약
-                summary = build_answer(query, matches, max_refs=5, answer_mode=answer_mode)
-                summary["answer"] = _format_natural_korean_answer(
-                    query=query,
-                    raw_answer=summary.get("answer", ""),
-                    references=summary.get("references", []),
-                    answer_mode=answer_mode
-                )
-                # ④ 링크 보정(실패 무시)
-                refs_out, results_out = [], []
-                for _r in summary.get("references", []):
-                    _company = (_r.get("company") or "").strip()
-                    _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
-                    rel = _guess_pdf_relpath(_company, _fileval) or _guess_pdf_relpath(_company, "")
-                    url = _make_pdf_url(rel, _r.get("page")) if rel else None
-                    item = dict(_r)
-                    item.update({"company":_company, "file":_fileval, "relpath": rel or ""})
-                    if url: item.update({"url":url, "pdf_url":url})
-                    item.setdefault("doc_url", item.get("url") or item.get("pdf_url"))
-                    item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
-                    refs_out.append(item)
-
-                for _r in summary.get("results", []):
-                    _company = (_r.get("company") or "").strip()
-                    _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
-                    rel = _guess_pdf_relpath(_company, _fileval) or _guess_pdf_relpath(_company, "")
-                    page_opt = _r.get("page")
-                    url = _make_pdf_url(rel, page_opt) if rel else None
-                    item = dict(_r)
-                    item.update({"company":_company, "file":_fileval, "relpath": rel or ""})
-                    if url: item.update({"url":url, "pdf_url":url})
-                    item.setdefault("doc_url", item.get("url") or item.get("pdf_url"))
-                    item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
-                    results_out.append(item)
-
-                return JsonResponse({
-                    'success': True,
-                    'answer': summary["answer"],
-                    'references': refs_out,
-                    'results': results_out,
-                    'total_results': len(matches),
-                    'used_model': os.getenv("EMBED_MODEL", "unknown"),
-                    'media_url': settings.MEDIA_URL,
-                })
-
-            except Exception as e:
-                # RAG이 죽으면 여기서 끝내지 말고, 일반 LLM으로 폴백해 성공 응답으로 보낸다.
-                logger.exception("[RAG] 처리 실패, 일반 경로로 폴백합니다.")
-                fallback = call_llm_via_project_client(
-                    f"[약관 검색 실패로 일반 요약으로 대체]\n질문: {query}\n핵심만 간단히 설명해줘."
-                )
-                return JsonResponse({
-                    'success': True,
-                    'degraded': True,
-                    'answer': fallback,
-                    'references': [],
-                    'results': [],
-                    'total_results': 0,
-                    'used_model': os.getenv("OPENAI_MODEL", "project-llm"),
-                    'media_url': settings.MEDIA_URL,
-                }, status=200)
-
-        # --- 일반형 ---
+    # 2) 약관형 → RAG  (전체 가드: 실패해도 반드시 JSON으로 반환)
+    if intent == "policy" or answer_mode == "clauses":
         try:
-            answer = call_llm_via_project_client(query)
+            matches = retrieve_insurance_clauses(
+                query=query, top_k=top_k, company=company_name,
+                candidate_k=cand_k, min_score=0.0
+            )
+
+            orig_matches = matches
+            matches = dedup_matches_by_tuple(matches)
+            matches = fuzzy_dedup_matches(matches, threshold=0.965, window=80)
+            matches = ensure_not_overpruned(orig_matches, matches, min_ratio=0.35, min_count=5)
+
+            summary = build_answer(query, matches, max_refs=5, answer_mode=answer_mode)
+            summary["answer"] = _format_natural_korean_answer(
+                query=query,
+                raw_answer=summary.get("answer", ""),
+                references=summary.get("references", []),
+                answer_mode=answer_mode
+            )
+
+            # 링크 보정: 서버에서 직접 PDF URL 생성해 제공
+            refs_out: List[Dict[str, Any]] = []
+            for _r in summary.get("references", []):
+                _company = (_r.get("company") or "").strip()
+                _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
+                rel = _guess_pdf_relpath(_company, _fileval) or _guess_pdf_relpath(_company, "")
+                url = _make_pdf_url(rel, _r.get("page"), request) if rel else None
+
+                item = dict(_r)
+                item["company"] = _company
+                item["file"] = _fileval
+                item["relpath"] = rel or ""
+                if url:
+                    item["url"] = url
+                    item["pdf_url"] = url
+                item.setdefault("doc_url", item.get("url") or item.get("pdf_url"))
+                item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
+                refs_out.append(item)
+
+            results_out: List[Dict[str, Any]] = []
+            for _r in summary.get("results", []):
+                _company = (_r.get("company") or "").strip()
+                _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
+                rel = _guess_pdf_relpath(_company, _fileval) or _guess_pdf_relpath(_company, "")
+                page_opt = _r.get("page")
+                url = _make_pdf_url(rel, page_opt, request) if rel else None
+
+                item = dict(_r)
+                item["company"] = _company
+                item["file"] = _fileval
+                item["relpath"] = rel or ""
+                if url:
+                    item["url"] = url
+                    item["pdf_url"] = url
+                item.setdefault("doc_url", item.get("url") or item.get("pdf_url"))
+                item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
+                results_out.append(item)
+
             return JsonResponse({
                 'success': True,
-                'answer': answer,
-                'references': [],
-                'results': [],
-                'total_results': 0,
-                'used_model': os.getenv("OPENAI_MODEL", "project-llm"),
+                'answer': summary["answer"],
+                'references': refs_out,
+                'results': results_out,
+                'total_results': len(matches),
+                'used_model': os.getenv("EMBED_MODEL", "unknown"),
                 'media_url': settings.MEDIA_URL,
             })
         except Exception as e:
-            logger.exception("[LLM] 일반 경로 실패")
-            return JsonResponse({'success': False, 'error': f'LLM 처리 실패: {e}'}, status=502)
+            return JsonResponse({'success': False, 'error': f'RAG 처리 실패: {e}'}, status=500)
 
-    except Exception as e:
-        # 이 바깥에서라도 절대 HTML 500이 나가지 않게 최후 방어
-        logger.exception("[/insurance-recommendation/] 처리 중 알 수 없는 예외")
-        return JsonResponse({'success': False, 'error': f'서버 내부 오류: {e.__class__.__name__}'}, status=500)
+    # 3) 일반형 → 아카이브 기존 llm_client로 답변
+    answer = call_llm_via_project_client(query)
+    return JsonResponse({
+        'success': True,
+        'answer': answer,
+        'references': [],
+        'results': [],
+        'total_results': 0,
+        'used_model': os.getenv("OPENAI_MODEL", "project-llm"),
+        'media_url': settings.MEDIA_URL,
+    })
 
+# ────────────────────────────────────────────────────────────────────────────────
+# 용어 사전 페이지 & API (DB 비어도 JSON으로 안전 동작)
+# ────────────────────────────────────────────────────────────────────────────────
 def glossary(request: HttpRequest) -> HttpResponse:
     q = (request.GET.get("q") or "").strip()
     cat = (request.GET.get("cat") or "").strip()
+
     ALLOWED_CATS = ["보험용어", "과실비율/용어해설", "과실비율/FAQ"]
+
     terms_payload: List[Dict[str, Any]] = []
     try:
         qs = GlossaryTerm.objects.all().order_by('term')
@@ -794,6 +860,7 @@ def glossary(request: HttpRequest) -> HttpResponse:
         } for t in qs]
     except Exception:
         terms_payload = []
+
     if not terms_payload:
         data = _load_glossary_json()
         def _match(it):
@@ -820,10 +887,15 @@ def glossary(request: HttpRequest) -> HttpResponse:
             "meta": it.get("meta") or {},
             "updated_at": "",
         } for it in data if _match(it)]
+
+    # Fixed three tabs
     categories = ALLOWED_CATS[:]
+
+    # Inline pagination (no dependency on _paginate)
     page_number = request.GET.get("page", "1")
     paginator = Paginator(terms_payload, 30)
     page_obj = paginator.get_page(page_number)
+
     ctx = {
         "terms": list(page_obj.object_list),
         "page_obj": page_obj,
@@ -847,6 +919,8 @@ def glossary_api(request: HttpRequest) -> HttpResponse:
     q = (request.GET.get("q") or "").strip()
     cat = (request.GET.get("cat") or "").strip()
     limit = int(request.GET.get("limit") or 50)
+
+    # 1) DB 시도
     payload: List[Dict[str, Any]] = []
     try:
         terms = GlossaryTerm.objects.all()
@@ -873,8 +947,11 @@ def glossary_api(request: HttpRequest) -> HttpResponse:
         } for t in terms[:max(1, min(500, limit))]]
     except Exception:
         payload = []
+
+    # 2) DB 비거나 에러면 JSON fallback
     if not payload:
         json_terms = _load_glossary_json()
+        # 검색/필터 적용
         def _match(it: Dict[str, Any]) -> bool:
             if not q and not cat:
                 return True
@@ -889,6 +966,7 @@ def glossary_api(request: HttpRequest) -> HttpResponse:
             if cat and str(it.get("category", "")).strip() != cat:
                 return False
             return True
+
         norm = []
         for it in json_terms:
             item = {
@@ -905,11 +983,5 @@ def glossary_api(request: HttpRequest) -> HttpResponse:
             if _match(item):
                 norm.append(item)
         payload = norm[:max(1, min(500, limit))]
-    return JsonResponse({"success": True, "count": len(payload), "results": payload})
 
-def json_500(request: HttpRequest):
-    # 이 엔드포인트는 무조건 JSON으로
-    if request.path.startswith('/insurance-recommendation/'):
-        return JsonResponse({'success': False, 'error': '서버 내부 오류'}, status=500)
-    # 그 외는 기존 500 페이지(없으면 간단 텍스트)
-    return HttpResponse("Internal Server Error", status=500)
+    return JsonResponse({"success": True, "count": len(payload), "results": payload})
