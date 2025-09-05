@@ -31,6 +31,8 @@ from .models import GlossaryTerm
 from .pdf_processor import EnhancedPDFProcessor
 from .pinecone_search import retrieve_insurance_clauses
 from insurance_app.utils.buckets import BUCKETS, infer_bucket
+import logging
+logger = logging.getLogger(__name__)
 
 DOCS_DIR = Path(__file__).resolve().parent / "documents"
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -632,109 +634,141 @@ def insurance_recommendation(request: HttpRequest) -> HttpResponse:
             'MEDIA_URL': settings.MEDIA_URL,
         }
         return render(request, 'insurance_app/recommendation.html', context)
+
     try:
-        data = json.loads(request.body.decode('utf-8'))
-    except Exception:
-        return JsonResponse({'success': False, 'error': '잘못된 요청 본문입니다.'}, status=400)
-    query: str = (data.get('query') or data.get('question') or "").strip()
-    company_name: Optional[str] = data.get('company')
-    answer_mode: str = (data.get('answer_mode') or "normal").strip().lower()
-    top_k: int = int(data.get("top_k") or 12)
-    cand_k: int = max(2 * top_k, 20)
-    if not query:
-        return JsonResponse({'success': False, 'error': '질문을 입력해주세요.'}, status=400)
-    force_mode = (data.get("force_mode") or "").strip().lower() or None
-    intent = detect_intent_for_router(query, force=force_mode)
-    def _make_pdf_url(relpath: Optional[str], page: Optional[int], request: HttpRequest) -> Optional[str]:
-        if not relpath:
-            return None
+        # --- 입력 파싱 ---
         try:
-            base = request.build_absolute_uri(
-                reverse('insurance_app:serve_policy_pdf', kwargs={'relpath': relpath})
-            )
-        except NoReverseMatch:
+            data = json.loads(request.body.decode('utf-8'))
+        except Exception as e:
+            return JsonResponse({'success': False, 'error': f'잘못된 요청 본문입니다: {e}'}, status=400)
+
+        query: str = (data.get('query') or data.get('question') or "").strip()
+        company_name: Optional[str] = data.get('company')
+        answer_mode: str = (data.get('answer_mode') or "normal").strip().lower()
+        top_k: int = int(data.get("top_k") or 12)
+        cand_k: int = max(2 * top_k, 20)
+        if not query:
+            return JsonResponse({'success': False, 'error': '질문을 입력해주세요.'}, status=400)
+
+        # --- 라우팅 결정 (강제 옵션 포함) ---
+        force_mode = (data.get("force_mode") or "").strip().lower() or None
+        intent = detect_intent_for_router(query, force=force_mode)
+
+        # --- URL 생성 헬퍼 (reverse 실패 무시) ---
+        from django.urls import NoReverseMatch
+        def _make_pdf_url(relpath: Optional[str], page: Optional[int]) -> Optional[str]:
+            if not relpath:
+                return None
             try:
                 base = request.build_absolute_uri(
-                    reverse('serve_policy_pdf', kwargs={'relpath': relpath})
+                    reverse('insurance_app:serve_policy_pdf', kwargs={'relpath': relpath})
                 )
+            except NoReverseMatch:
+                try:
+                    base = request.build_absolute_uri(
+                        reverse('serve_policy_pdf', kwargs={'relpath': relpath})
+                    )
+                except Exception:
+                    return None
             except Exception:
                 return None
-        except Exception:
-            return None
-        if page:
-            return f"{base}#page={int(page)}"
-        return base
-    if intent == "policy" or answer_mode == "clauses":
+            return f"{base}#page={int(page)}" if page else base
+
+        # --- 약관형(RAG) ---
+        if intent == "policy" or answer_mode == "clauses":
+            try:
+                # ① 검색
+                matches = retrieve_insurance_clauses(
+                    query=query, top_k=top_k, company=company_name,
+                    candidate_k=cand_k, min_score=0.0
+                )
+                # ② 정제
+                orig_matches = matches
+                matches = dedup_matches_by_tuple(matches)
+                matches = fuzzy_dedup_matches(matches, threshold=0.965, window=80)
+                matches = ensure_not_overpruned(orig_matches, matches, min_ratio=0.35, min_count=5)
+                # ③ 요약
+                summary = build_answer(query, matches, max_refs=5, answer_mode=answer_mode)
+                summary["answer"] = _format_natural_korean_answer(
+                    query=query,
+                    raw_answer=summary.get("answer", ""),
+                    references=summary.get("references", []),
+                    answer_mode=answer_mode
+                )
+                # ④ 링크 보정(실패 무시)
+                refs_out, results_out = [], []
+                for _r in summary.get("references", []):
+                    _company = (_r.get("company") or "").strip()
+                    _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
+                    rel = _guess_pdf_relpath(_company, _fileval) or _guess_pdf_relpath(_company, "")
+                    url = _make_pdf_url(rel, _r.get("page")) if rel else None
+                    item = dict(_r)
+                    item.update({"company":_company, "file":_fileval, "relpath": rel or ""})
+                    if url: item.update({"url":url, "pdf_url":url})
+                    item.setdefault("doc_url", item.get("url") or item.get("pdf_url"))
+                    item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
+                    refs_out.append(item)
+
+                for _r in summary.get("results", []):
+                    _company = (_r.get("company") or "").strip()
+                    _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
+                    rel = _guess_pdf_relpath(_company, _fileval) or _guess_pdf_relpath(_company, "")
+                    page_opt = _r.get("page")
+                    url = _make_pdf_url(rel, page_opt) if rel else None
+                    item = dict(_r)
+                    item.update({"company":_company, "file":_fileval, "relpath": rel or ""})
+                    if url: item.update({"url":url, "pdf_url":url})
+                    item.setdefault("doc_url", item.get("url") or item.get("pdf_url"))
+                    item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
+                    results_out.append(item)
+
+                return JsonResponse({
+                    'success': True,
+                    'answer': summary["answer"],
+                    'references': refs_out,
+                    'results': results_out,
+                    'total_results': len(matches),
+                    'used_model': os.getenv("EMBED_MODEL", "unknown"),
+                    'media_url': settings.MEDIA_URL,
+                })
+
+            except Exception as e:
+                # RAG이 죽으면 여기서 끝내지 말고, 일반 LLM으로 폴백해 성공 응답으로 보낸다.
+                logger.exception("[RAG] 처리 실패, 일반 경로로 폴백합니다.")
+                fallback = call_llm_via_project_client(
+                    f"[약관 검색 실패로 일반 요약으로 대체]\n질문: {query}\n핵심만 간단히 설명해줘."
+                )
+                return JsonResponse({
+                    'success': True,
+                    'degraded': True,
+                    'answer': fallback,
+                    'references': [],
+                    'results': [],
+                    'total_results': 0,
+                    'used_model': os.getenv("OPENAI_MODEL", "project-llm"),
+                    'media_url': settings.MEDIA_URL,
+                }, status=200)
+
+        # --- 일반형 ---
         try:
-            matches = retrieve_insurance_clauses(
-                query=query, top_k=top_k, company=company_name,
-                candidate_k=cand_k, min_score=0.0
-            )
-            orig_matches = matches
-            matches = dedup_matches_by_tuple(matches)
-            matches = fuzzy_dedup_matches(matches, threshold=0.965, window=80)
-            matches = ensure_not_overpruned(orig_matches, matches, min_ratio=0.35, min_count=5)
-            summary = build_answer(query, matches, max_refs=5, answer_mode=answer_mode)
-            summary["answer"] = _format_natural_korean_answer(
-                query=query,
-                raw_answer=summary.get("answer", ""),
-                references=summary.get("references", []),
-                answer_mode=answer_mode
-            )
-            refs_out: List[Dict[str, Any]] = []
-            for _r in summary.get("references", []):
-                _company = (_r.get("company") or "").strip()
-                _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
-                rel = _guess_pdf_relpath(_company, _fileval) or _guess_pdf_relpath(_company, "")
-                url = _make_pdf_url(rel, _r.get("page"), request) if rel else None
-                item = dict(_r)
-                item["company"] = _company
-                item["file"] = _fileval
-                item["relpath"] = rel or ""
-                if url:
-                    item["url"] = url
-                    item["pdf_url"] = url
-                item.setdefault("doc_url", item.get("url") or item.get("pdf_url"))
-                item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
-                refs_out.append(item)
-            results_out: List[Dict[str, Any]] = []
-            for _r in summary.get("results", []):
-                _company = (_r.get("company") or "").strip()
-                _fileval = (_r.get("file") or _r.get("path") or _r.get("source") or "").strip()
-                rel = _guess_pdf_relpath(_company, _fileval) or _guess_pdf_relpath(_company, "")
-                page_opt = _r.get("page")
-                url = _make_pdf_url(rel, page_opt, request) if rel else None
-                item = dict(_r)
-                item["company"] = _company
-                item["file"] = _fileval
-                item["relpath"] = rel or ""
-                if url:
-                    item["url"] = url
-                    item["pdf_url"] = url
-                item.setdefault("doc_url", item.get("url") or item.get("pdf_url"))
-                item.setdefault("pdf_link", item.get("pdf_url") or item.get("url"))
-                results_out.append(item)
+            answer = call_llm_via_project_client(query)
             return JsonResponse({
                 'success': True,
-                'answer': summary["answer"],
-                'references': refs_out,
-                'results': results_out,
-                'total_results': len(matches),
-                'used_model': os.getenv("EMBED_MODEL", "unknown"),
+                'answer': answer,
+                'references': [],
+                'results': [],
+                'total_results': 0,
+                'used_model': os.getenv("OPENAI_MODEL", "project-llm"),
                 'media_url': settings.MEDIA_URL,
             })
         except Exception as e:
-            return JsonResponse({'success': False, 'error': f'RAG 처리 실패: {e}'}, status=500)
-    answer = call_llm_via_project_client(query)
-    return JsonResponse({
-        'success': True,
-        'answer': answer,
-        'references': [],
-        'results': [],
-        'total_results': 0,
-        'used_model': os.getenv("OPENAI_MODEL", "project-llm"),
-        'media_url': settings.MEDIA_URL,
-    })
+            logger.exception("[LLM] 일반 경로 실패")
+            return JsonResponse({'success': False, 'error': f'LLM 처리 실패: {e}'}, status=502)
+
+    except Exception as e:
+        # 이 바깥에서라도 절대 HTML 500이 나가지 않게 최후 방어
+        logger.exception("[/insurance-recommendation/] 처리 중 알 수 없는 예외")
+        return JsonResponse({'success': False, 'error': f'서버 내부 오류: {e.__class__.__name__}'}, status=500)
 
 def glossary(request: HttpRequest) -> HttpResponse:
     q = (request.GET.get("q") or "").strip()
@@ -872,3 +906,10 @@ def glossary_api(request: HttpRequest) -> HttpResponse:
                 norm.append(item)
         payload = norm[:max(1, min(500, limit))]
     return JsonResponse({"success": True, "count": len(payload), "results": payload})
+
+def json_500(request: HttpRequest):
+    # 이 엔드포인트는 무조건 JSON으로
+    if request.path.startswith('/insurance-recommendation/'):
+        return JsonResponse({'success': False, 'error': '서버 내부 오류'}, status=500)
+    # 그 외는 기존 500 페이지(없으면 간단 텍스트)
+    return HttpResponse("Internal Server Error", status=500)

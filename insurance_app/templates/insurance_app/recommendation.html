@@ -236,28 +236,56 @@
       inp.value=''; btn.disabled=true;
       const pendingId = addThinkingBubble();
 
-      try{
-        const r=await fetch('/insurance-recommendation/',{
-          method:'POST',
-          headers:{'Content-Type':'application/json','X-CSRFToken':getCookie('csrftoken')},
-          body:JSON.stringify({query:q, top_k:12, answer_mode: mode})
-        });
-        const data=await r.json();
+      // "간단/자세히"는 일반경로, "조항만"은 RAG 경로로 강제 (임시 안정화)
+      const force_mode = (mode === 'clauses') ? 'policy' : 'general';
 
-        if(!data.success){
-          replaceBubble(pendingId, `<div style="color:#b91c1c">에러: ${data.error||'요청 실패'}</div>`);
+      // 30초 타임아웃(504/지연시 사용자 경험 개선)
+      const ac = new AbortController();
+      const t = setTimeout(()=>ac.abort(), 30000);
+
+      try{
+        const r = await fetch('/insurance-recommendation/',{
+          method:'POST',
+          headers:{
+            'Content-Type':'application/json',
+            'Accept':'application/json',               // 서버에게 JSON을 기대한다고 힌트
+            'X-Requested-With':'XMLHttpRequest',      // 일부 미들웨어가 JSON 에러로 바꿔줌
+            'X-CSRFToken': getCookie('csrftoken')
+          },
+          body: JSON.stringify({ query:q, top_k:12, answer_mode:mode, force_mode }),
+          signal: ac.signal
+        });
+
+        // 👇 안전 파서: content-type이 json일 때만 r.json(), 아니면 text로
+        let data = null, raw = '';
+        const ct = (r.headers.get('content-type')||'').toLowerCase();
+        if (ct.includes('application/json') || ct.includes('+json')) {
+          try { data = await r.json(); } catch (e) { /* JSON 깨졌을 때 대비 */ }
+        }
+        if (!data) {                                // JSON이 아니면 text로 받아 에러 보여주기
+          raw = await r.text();
+          data = { success:false, error: (raw||'').slice(0, 600) };
+        }
+
+        if (!r.ok || !data.success) {
+          const code = `HTTP ${r.status}${r.statusText?(' '+r.statusText):''}`;
+          const msg  = (data && data.error) ? data.error : code;
+          replaceBubble(pendingId, `<div style="color:#b91c1c">에러: ${msg}</div>`);
+          console.error('[/insurance-recommendation/] error:', {status:r.status, ct, body: raw||data});
           return;
         }
 
         const answerHtml = `<div style="white-space:pre-wrap">${highlight(String(data.answer||''), q)}</div>`;
         const refsHtml = await renderReferences(data.references || []);
-
         const html = `${answerHtml}${refsHtml ? `<div class="meta">근거<br/>${refsHtml}</div>` : ''}`;
         replaceBubble(pendingId, html);
+
       }catch(e){
-        replaceBubble(pendingId, `<div style="color:#b91c1c">요청 중 오류가 발생했습니다.</div>`);
+        const aborted = (e && e.name === 'AbortError');
+        replaceBubble(pendingId, `<div style="color:#b91c1c">${aborted?'요청이 시간 제한을 초과했어요(타임아웃).':'요청 중 오류가 발생했습니다.'}</div>`);
         console.error(e);
       }finally{
+        clearTimeout(t);
         btn.disabled=false;
       }
     }
