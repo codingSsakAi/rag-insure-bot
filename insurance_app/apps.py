@@ -8,6 +8,7 @@ class InsuranceAppConfig(AppConfig):
     def ready(self):
         try:
             from .services.embedding_provider import warmup_embedding_model
-            warmup_embedding_model()
+            import threading
+            threading.Thread(target=warmup_embedding_model, daemon=True).start()
         except Exception:
             pass

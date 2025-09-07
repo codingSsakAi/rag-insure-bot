@@ -1,7 +1,7 @@
 # insurance_app/services/embedding_provider.py
 import os, time, requests, numpy as np
 from typing import Sequence, Union
-from huggingface_hub import InferenceClient
+from huggingface_hub import InferenceClient, HfApi
 
 INDEX_DIM = int(os.getenv("INDEX_DIM", os.getenv("TARGET_INDEX_DIM", "1024")))
 HF_TIMEOUT = float(os.getenv("HF_INFERENCE_TIMEOUT", "60"))
@@ -13,7 +13,9 @@ def _l2n(a: np.ndarray) -> np.ndarray:
 class HFRemoteEmbedder:
     def __init__(self, model_id: str, token: str | None, timeout: float = HF_TIMEOUT, retries: int = HF_RETRIES):
         self.model_id = model_id
+        self.token = token
         self.client = InferenceClient(model=model_id, token=token, timeout=timeout)
+        self.api = HfApi(token=token)
         self.timeout = timeout
         self.retries = retries
         self.headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -67,11 +69,17 @@ def get_query_embedder():
     return HFRemoteEmbedder(model_id, token)
 
 def warmup_embedding_model():
+    if os.getenv("HF_WARMUP", "1") != "1":
+        return
     try:
         embedder = get_query_embedder()
         try:
-            embedder.client.get_model_status()
+            embedder.api.model_info(embedder.model_id)
         except Exception:
+            pass
+        try:
             embedder.embed(["ping"])
+        except Exception:
+            pass
     except Exception:
         pass
